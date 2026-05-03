@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MulanPSL-2.0
+# explore_rbnx container entrypoint.
+#
+# Single long-running process: explore_skill.atlas_bridge runs an
+# rclpy node, registers 3 MCP capabilities with atlas, and serves
+# them via FastMCP HTTP. The skill's task lifecycle (driving the
+# robot through frontier-based exploration) is internal to that
+# process; map / nav are atlas-resolved.
+set -eo pipefail
+
+source /opt/ros/humble/setup.bash
+
+cd /explore
+
+export PYTHONPATH="/explore:/explore/proto_gen:${PYTHONPATH:-}"
+if [ -d /robonix-py ]; then
+    export PYTHONPATH="/robonix-py:${PYTHONPATH}"
+fi
+
+mkdir -p /explore/rbnx-build/data
+
+exec python3 -m explore_skill.atlas_bridge 2>&1 | sed 's/^/[explore] /'

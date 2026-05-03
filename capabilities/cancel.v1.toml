@@ -1,0 +1,15 @@
+# robonix/skill/explore/cancel — abort the active exploration task.
+# Stops the loop and sends a stop goal to the nav service. Idempotent.
+[contract]
+id      = "robonix/skill/explore/cancel"
+version = "1"
+kind    = "skill"
+
+[io.srv]
+srv = "srv/CancelExplore"
+
+[mode]
+type = "rpc"
+
+[semantics]
+user_invocable = true

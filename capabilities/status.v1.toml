@@ -1,0 +1,16 @@
+# robonix/skill/explore/status — poll progress of a running explore.
+# Pilot calls this between rounds to decide whether to wait or to
+# proceed to navigate-class skills.
+[contract]
+id      = "robonix/skill/explore/status"
+version = "1"
+kind    = "skill"
+
+[io.srv]
+srv = "srv/GetExploreStatus"
+
+[mode]
+type = "rpc"
+
+[semantics]
+user_invocable = true

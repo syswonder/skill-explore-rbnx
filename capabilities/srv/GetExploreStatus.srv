@@ -1,0 +1,12 @@
+# robonix/skill/explore/status — poll an exploration task's progress.
+# Empty task_id means "the most recent task" so callers don't need to
+# track ids if they only run one explore at a time.
+string task_id
+---
+bool known                  # false if no task with that id
+string state                # idle | exploring | done | timeout | canceled | error
+float32 area_m2             # mapped free area so far
+int32 frontiers_left        # frontier clusters above min_size threshold
+float32 elapsed_s
+float32 eta_s               # estimated seconds until done; -1 unknown
+string detail               # human-readable
