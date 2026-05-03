@@ -95,7 +95,7 @@ def find_frontier_cells(gv: GridView) -> np.ndarray:
     return np.stack([xx, yy], axis=1)  # (N, 2) as (cx, cy)
 
 
-def cluster_frontiers(cells: np.ndarray, min_size: int = 8,
+def cluster_frontiers(cells: np.ndarray, min_size: int = 3,
                        max_link_cells: int = 2) -> List[FrontierCluster]:
     """Connected-components style clustering with 8-neighbour adjacency
     extended by `max_link_cells` (cells within this Chebyshev distance
@@ -156,7 +156,7 @@ def cluster_frontiers(cells: np.ndarray, min_size: int = 8,
 
 
 def is_target_safe(gv: GridView, wx: float, wy: float,
-                    safe_radius_m: float = 0.30) -> bool:
+                    safe_radius_m: float = 0.15) -> bool:
     """Reject targets that sit inside or near an obstacle. Checks
     every cell within `safe_radius_m` Manhattan-radius around the
     target — if any is an obstacle, the target is unsafe. This is the
@@ -230,7 +230,7 @@ def score_clusters(clusters: List[FrontierCluster], gv: GridView,
 
 
 def pick_target(gv: GridView, robot_xy: Tuple[float, float], *,
-                 min_size: int = 8,
+                 min_size: int = 3,
                  max_distance_m: float = 8.0,
                  visited_cells: Optional[set] = None
                  ) -> Optional[FrontierCluster]:
@@ -248,7 +248,7 @@ def pick_target(gv: GridView, robot_xy: Tuple[float, float], *,
     return scored[0][1] if scored else None
 
 
-def total_frontier_count(gv: GridView, min_size: int = 8) -> int:
+def total_frontier_count(gv: GridView, min_size: int = 3) -> int:
     """For status reporting: how many frontier clusters remain that
     are large enough to warrant another exploration round."""
     cells = find_frontier_cells(gv)

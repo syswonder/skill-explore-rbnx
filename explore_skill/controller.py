@@ -59,7 +59,7 @@ class ExploreController:
     one active task at a time."""
 
     # Tunables
-    FRONTIER_MIN_SIZE_CELLS = 8           # below this = noise, ignore
+    FRONTIER_MIN_SIZE_CELLS = 3           # below this = noise, ignore
     DONE_QUIET_SECONDS = 30.0             # no progress for this long → done
     PROGRESS_AREA_DELTA_M2 = 1.0          # area gain considered "progress"
     NAV_POLL_PERIOD_S = 1.0
@@ -195,7 +195,7 @@ class ExploreController:
             from rclpy.time import Time
             tr = self._tf_buffer.lookup_transform(
                 "map", "base_link", Time(),
-                timeout=self._ros["Duration"](seconds=0.05))
+                timeout=self._ros["Duration"](seconds=0.5))
         except Exception:
             return
         x = float(tr.transform.translation.x)
