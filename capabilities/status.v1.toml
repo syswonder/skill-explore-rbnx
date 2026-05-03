@@ -7,7 +7,7 @@ version = "1"
 kind    = "skill"
 
 [io.srv]
-srv = "srv/GetExploreStatus"
+srv = "explore/srv/GetExploreStatus"
 
 [mode]
 type = "rpc"

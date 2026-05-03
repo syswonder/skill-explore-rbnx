@@ -6,7 +6,7 @@ version = "1"
 kind    = "skill"
 
 [io.srv]
-srv = "srv/CancelExplore"
+srv = "explore/srv/CancelExplore"
 
 [mode]
 type = "rpc"

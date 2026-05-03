@@ -9,7 +9,7 @@ version = "1"
 kind    = "skill"
 
 [io.srv]
-srv = "srv/Explore"           # package-local; resolved against capabilities/srv/
+srv = "explore/srv/Explore"           # package-local; resolved against capabilities/srv/
 
 [mode]
 type = "rpc"
