@@ -354,9 +354,22 @@ class ExploreController:
                                   max_distance_m=self.MAX_FRONTIER_DISTANCE_M,
                                   visited_cells=visited_snapshot)
             if target is None:
-                # No frontier picked but quiet timer hasn't elapsed —
-                # wait a beat and re-check (map may just have flickered).
-                time.sleep(self.LOOP_QUIET_PERIOD_S)
+                # No safe frontier picked, but quiet timer hasn't fired
+                # yet → the map likely doesn't have ENOUGH known-free
+                # space around the robot for the safety filter to
+                # accept a centroid. The right move is to spin in
+                # place: sweeping the lidar 360° at the current pose
+                # extends known-free + observes new walls, which makes
+                # new safe frontier candidates appear next iteration.
+                # Without this, we'd just sit and the map would never
+                # grow because nav-to-nowhere doesn't move the robot.
+                handle.detail = (f"no safe frontier; "
+                                  f"spinning to expand FOV ({n_frontiers} "
+                                  f"raw clusters detected)")
+                log.info("[%s] %s", handle.task_id, handle.detail)
+                self._sweep_360(handle)
+                # After the spin, re-evaluate immediately rather than
+                # sleeping — the map should now be richer.
                 continue
 
             tx, ty = target.centroid_xy
@@ -492,15 +505,16 @@ class ExploreController:
                                  cancel_evt: TaskHandle) -> Tuple[bool, str]:
         """Send a goal via the nav MCP `navigate` tool, then poll the
         sibling `status` tool until terminal or timeout."""
-        # Issue goal. simple_nav's navigate tool takes (target_x,
-        # target_y, tolerance_m); it does NOT currently take a yaw
-        # argument (yaw came in via /goal_pose later). For 360° sweep
-        # legs we ignore yaw mismatch and use the xy goal only —
-        # follower's terminal phase will rotate to whatever it ends
-        # up at. (Fix path: extend simple_nav's navigate MCP schema
-        # to optionally accept target_yaw; out-of-scope here.)
+        # Issue goal. simple_nav's navigate tool now accepts an
+        # optional `target_yaw` (rad in map frame). For 360° sweep
+        # legs the xy is unchanged but yaw rotates — without passing
+        # yaw, simple_nav declares arrival immediately (xy already
+        # match) and never publishes the rotation Twist, so the robot
+        # sits still while the skill thinks it's sweeping.
         args = {"target_x": float(x), "target_y": float(y),
                 "tolerance_m": 0.25}
+        if yaw is not None:
+            args["target_yaw"] = float(yaw)
         resp = self._mcp_call_sync("navigate", args)
         if not resp.get("ok") and not resp.get("accepted", True):
             return False, f"goal rejected: {resp.get('detail', '')}"
