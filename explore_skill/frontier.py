@@ -157,23 +157,18 @@ def cluster_frontiers(cells: np.ndarray, min_size: int = 3,
 
 def is_target_safe(gv: GridView, wx: float, wy: float,
                     safe_radius_m: float = 0.15) -> bool:
-    """Reject targets that sit inside or near an obstacle, OR land
-    deep in unmapped territory beyond walls. Two checks within
-    `safe_radius_m` of the target:
+    """Reject targets that sit inside or near an obstacle. Single
+    check: every cell in a `safe_radius_m`-radius patch around the
+    target must be NON-OCCUPIED (g < OCC_THRESH). Unknown cells (-1)
+    are allowed — frontier centroids sit on the free/unknown boundary
+    by construction, so requiring "mostly known" at the exact centroid
+    deadlocks exploration ("no safe frontier" forever even when 7+
+    legitimate clusters exist; observed on webots tiago).
 
-      - any cell in the patch is occupied (g >= OCC_THRESH) → unsafe.
-      - more than half the patch unknown → not enough context to
-        commit (we'd be flying blind through unmapped space).
-
-    The centroid cell itself is NOT required to be `g == 0` — a
-    frontier centroid sits on the free/unknown boundary by definition,
-    so requiring known-free at the exact centroid means every cluster
-    whose centroid happens to land on the unknown side gets rejected,
-    and exploration deadlocks at "no safe frontier" forever even when
-    plenty of legitimate frontiers exist. The patch-level checks
-    (occupied + unknown-fraction) are the actual safety surface; the
-    nav service's costmap layer is the second line of defence against
-    inflation-halo violations.
+    The nav service's costmap layer is the second line of defence
+    against inflation-halo violations — if the actual planner can't
+    route to the chosen frontier, the goal aborts and the controller
+    falls through to the next candidate.
     """
     cx, cy = gv.world_to_cell(wx, wy)
     if not gv.in_bounds(cx, cy):
@@ -182,11 +177,7 @@ def is_target_safe(gv: GridView, wx: float, wy: float,
     y0, y1 = max(0, cy - r), min(gv.height, cy + r + 1)
     x0, x1 = max(0, cx - r), min(gv.width,  cx + r + 1)
     patch = gv.data[y0:y1, x0:x1]
-    if not bool(np.all(patch < OCC_THRESH)):
-        return False
-    if float(np.mean(patch == -1)) > 0.5:
-        return False
-    return True
+    return bool(np.all(patch < OCC_THRESH))
 
 
 def score_clusters(clusters: List[FrontierCluster], gv: GridView,
