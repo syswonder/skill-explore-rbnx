@@ -525,13 +525,9 @@ class ExploreController:
         resp = self._mcp_call_sync("navigate", {"goal": goal_pose})
         if not resp.get("accepted", False):
             return False, f"goal rejected: {resp.get('status_message', '')}"
-        # navigate returns Navigate_Response{accepted, status_message},
-        # where status_message is a JSON string carrying `goal_id`.
-        try:
-            import json
-            goal_id = json.loads(resp.get("status_message", "{}")).get("goal_id", "")
-        except Exception:  # noqa: BLE001
-            goal_id = ""
+        # Navigate.srv response carries goal_id directly; status_message
+        # is free-form text only.
+        goal_id = resp.get("goal_id", "")
 
         # Poll status.
         deadline = time.time() + timeout_s
