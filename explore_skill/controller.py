@@ -505,20 +505,33 @@ class ExploreController:
                                  cancel_evt: TaskHandle) -> Tuple[bool, str]:
         """Send a goal via the nav MCP `navigate` tool, then poll the
         sibling `status` tool until terminal or timeout."""
-        # Issue goal. simple_nav's navigate tool now accepts an
-        # optional `target_yaw` (rad in map frame). For 360° sweep
-        # legs the xy is unchanged but yaw rotates — without passing
-        # yaw, simple_nav declares arrival immediately (xy already
-        # match) and never publishes the rotation Twist, so the robot
-        # sits still while the skill thinks it's sweeping.
-        args = {"target_x": float(x), "target_y": float(y),
-                "tolerance_m": 0.25}
+        # Navigate.srv carries a PoseStamped (`goal`) — encode xy in
+        # position and the optional yaw as a unit quaternion in
+        # orientation. simple_nav's atlas_bridge interprets the
+        # identity quat (z=0, w=1) as "no yaw constraint", so for
+        # legs that don't care about heading we leave it identity.
         if yaw is not None:
-            args["target_yaw"] = float(yaw)
-        resp = self._mcp_call_sync("navigate", args)
-        if not resp.get("ok") and not resp.get("accepted", True):
-            return False, f"goal rejected: {resp.get('detail', '')}"
-        goal_id = resp.get("goal_id", "")
+            qz, qw = math.sin(yaw / 2.0), math.cos(yaw / 2.0)
+        else:
+            qz, qw = 0.0, 1.0
+        goal_pose = {
+            "header": {"frame_id": "map",
+                       "stamp": {"sec": 0, "nanosec": 0}},
+            "pose": {
+                "position": {"x": float(x), "y": float(y), "z": 0.0},
+                "orientation": {"x": 0.0, "y": 0.0, "z": qz, "w": qw},
+            },
+        }
+        resp = self._mcp_call_sync("navigate", {"goal": goal_pose})
+        if not resp.get("accepted", False):
+            return False, f"goal rejected: {resp.get('status_message', '')}"
+        # navigate returns Navigate_Response{accepted, status_message},
+        # where status_message is a JSON string carrying `goal_id`.
+        try:
+            import json
+            goal_id = json.loads(resp.get("status_message", "{}")).get("goal_id", "")
+        except Exception:  # noqa: BLE001
+            goal_id = ""
 
         # Poll status.
         deadline = time.time() + timeout_s
