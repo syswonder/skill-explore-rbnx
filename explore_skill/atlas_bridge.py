@@ -27,10 +27,14 @@ ctrl: ExploreController | None = None
 # fallback for cross-package topics", and a skill that can't find its
 # dependencies should not pretend to work.
 REQUIRED_INPUTS = {
-    "map_topic":     ("robonix/service/map/occupancy_grid", ""),
-    "nav_navigate":  ("robonix/service/navigation/navigate", ""),
-    "nav_status":    ("robonix/service/navigation/status", ""),
-    "nav_cancel":    ("robonix/service/navigation/cancel", ""),
+    # (contract_id, transport) — transport must be a concrete enum, not
+    # "unspecified", so atlas can return a usable endpoint string. The
+    # nav contracts are mode=rpc and simple_nav exposes them as MCP tools
+    # (see examples/webots/services/simple_nav/package_manifest.yaml header).
+    "map_topic":     ("robonix/service/map/occupancy_grid", "ros2"),
+    "nav_navigate":  ("robonix/service/navigation/navigate", "mcp"),
+    "nav_status":    ("robonix/service/navigation/status", "mcp"),
+    "nav_cancel":    ("robonix/service/navigation/cancel", "mcp"),
 }
 
 
@@ -117,11 +121,33 @@ def cancel(req: CancelExplore_Request) -> CancelExplore_Response:
 
 
 # ── lifecycle ────────────────────────────────────────────────────────────────
+# Skills split init from up: rbnx boot calls Driver(CMD_INIT) on every
+# package and stops there for skills (state = INITIALIZED). The executor
+# sends Driver(CMD_UP) just-in-time on the first MCP call, which is when
+# the skill actually allocates hot resources (ROS subs, frontier loop, …).
+# See robonix/docs/cap-lifecycle.md for the full state machine.
 @cap.on_init
 def init(cfg):
+    """CMD_INIT: light. The state machine wants every cap to reach
+    INITIALIZED at boot time even if its upstream peers are still warming
+    up — so we deliberately don't query atlas for nav / map here. cfg is
+    accepted for forward-compat (no manifest knobs declared yet)."""
+    log.info("CMD_INIT ok")
+    return cap.ready()
+
+
+@cap.on_up
+def up(cfg):
+    """CMD_UP: heavy. Resolve the upstream contracts NOW (executor only
+    sends CMD_UP when there's actually a request to satisfy, by which
+    point map / nav should be ONLINE), then build the ExploreController
+    and start the rclpy thread. Idempotent on re-entry."""
     global ctrl
+    if ctrl is not None:
+        log.info("CMD_UP — already up, no-op")
+        return cap.ready(state="online")
     inputs = resolve_inputs()
-    log.info("dependencies resolved: %s", inputs)
+    log.info("dependencies resolved: %s", list(inputs.keys()))
     ctrl = ExploreController(
         map_topic=inputs["map_topic"],
         nav_navigate_endpoint=inputs["nav_navigate"],
@@ -129,7 +155,25 @@ def init(cfg):
         nav_cancel_endpoint=inputs["nav_cancel"],
     )
     ctrl.start_runtime()
-    return cap.ready()
+    log.info("CMD_UP ok — controller running")
+    return cap.ready(state="online")
+
+
+@cap.on_down
+def down():
+    """CMD_DOWN: stop the rclpy thread + drop the controller. Safe to call
+    repeatedly; the second call is a no-op. Future eviction policy lives
+    in the executor — when it decides this skill is cold, it sends DOWN
+    and we release the heavy resources here."""
+    global ctrl
+    if ctrl is None:
+        return cap.ready(state="offline")
+    try:
+        ctrl.stop_runtime()
+    finally:
+        ctrl = None
+    log.info("CMD_DOWN ok — controller stopped")
+    return cap.ready(state="offline")
 
 
 def main() -> int:
