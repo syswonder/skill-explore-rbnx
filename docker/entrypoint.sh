@@ -13,7 +13,7 @@ source /opt/ros/humble/setup.bash
 
 cd /explore
 
-export PYTHONPATH="/explore:/explore/proto_gen:${PYTHONPATH:-}"
+export PYTHONPATH="/explore:/explore/rbnx-build/codegen/proto_gen:/explore/rbnx-build/codegen/robonix_mcp_types:${PYTHONPATH:-}"
 if [ -d /robonix-py ]; then
     export PYTHONPATH="/robonix-py:${PYTHONPATH}"
 fi

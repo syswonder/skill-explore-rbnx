@@ -26,6 +26,8 @@ start: bash scripts/start.sh
 # Fixed capability surface — everything we declare on atlas at startup
 # is listed here. New caps == bump version + update atlas_bridge.
 capabilities:
+  - name: robonix/skill/explore/driver
+    path: capabilities/driver.v1.toml
   - name: robonix/skill/explore/explore
     path: capabilities/explore.v1.toml
   - name: robonix/skill/explore/status

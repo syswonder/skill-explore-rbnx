@@ -37,7 +37,6 @@ exec docker run --rm \
     -e ROBONIX_PKG_HOST_DIR="$(pwd)" \
     -e RBNX_CONFIG_FILE="${RBNX_CONFIG_FILE:-}" \
     -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
-    -e EXPLORE_MCP_PORT="${EXPLORE_MCP_PORT:-50130}" \
     -v "$(pwd)":/explore \
     -v "$(rbnx path robonix-py)":/robonix-py:ro \
     "${EXTRA_MOUNTS[@]}" \
