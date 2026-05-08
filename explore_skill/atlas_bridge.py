@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import time
 
-from robonix_api import Capability
+from robonix_api import Capability, Ok, Err, Deferred
 
 from .controller import ExploreController
 
@@ -138,7 +138,7 @@ def init(cfg):
     up — so we deliberately don't query atlas for nav / map here. cfg is
     accepted for forward-compat (no manifest knobs declared yet)."""
     log.info("CMD_INIT ok")
-    return cap.ready()
+    return Ok()
 
 
 @cap.on_activate
@@ -150,7 +150,7 @@ def activate(cfg):
     global ctrl
     if ctrl is not None:
         log.info("CMD_ACTIVATE — already runnable, no-op")
-        return cap.ready()
+        return Ok()
     inputs = resolve_inputs()
     log.info("dependencies resolved: %s", list(inputs.keys()))
     ctrl = ExploreController(
@@ -161,7 +161,7 @@ def activate(cfg):
     )
     ctrl.start_runtime()
     log.info("CMD_ACTIVATE ok — controller running")
-    return cap.ready()
+    return Ok()
 
 
 @cap.on_deactivate
@@ -171,13 +171,13 @@ def deactivate():
     policy fires this when the skill has been idle long enough."""
     global ctrl
     if ctrl is None:
-        return cap.ready()
+        return Ok()
     try:
         ctrl.stop_runtime()
     finally:
         ctrl = None
     log.info("CMD_DEACTIVATE ok — controller stopped")
-    return cap.ready()
+    return Ok()
 
 
 def main() -> int:
