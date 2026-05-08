@@ -9,9 +9,7 @@
 id      = "robonix/skill/explore/driver"
 version = "1"
 kind    = "skill"
-
-[io.srv]
-srv = "lifecycle/srv/Driver"
+idl     = "lifecycle/srv/Driver.srv"
 
 [mode]
 type = "rpc"

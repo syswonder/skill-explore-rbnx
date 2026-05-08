@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO,
                     format="[explore] %(levelname)s %(message)s")
 log = logging.getLogger("explore_rbnx")
 
-cap = Capability(id="com.robonix.skill.explore", namespace="robonix/skill/explore")
+cap = Capability(id="explore", namespace="robonix/skill/explore")
 ctrl: ExploreController | None = None
 
 # Atlas-resolved inputs the skill consumes. Hard-fail if any required

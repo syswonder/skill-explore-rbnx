@@ -7,9 +7,7 @@
 id      = "robonix/skill/explore/explore"
 version = "1"
 kind    = "skill"
-
-[io.srv]
-srv = "explore/srv/Explore"           # package-local; resolved against capabilities/srv/
+idl     = "explore/srv/Explore.srv"
 
 [mode]
 type = "rpc"

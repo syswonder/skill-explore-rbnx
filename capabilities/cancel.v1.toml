@@ -4,9 +4,7 @@
 id      = "robonix/skill/explore/cancel"
 version = "1"
 kind    = "skill"
-
-[io.srv]
-srv = "explore/srv/CancelExplore"
+idl     = "explore/srv/CancelExplore.srv"
 
 [mode]
 type = "rpc"

@@ -5,9 +5,7 @@
 id      = "robonix/skill/explore/status"
 version = "1"
 kind    = "skill"
-
-[io.srv]
-srv = "explore/srv/GetExploreStatus"
+idl     = "explore/srv/GetExploreStatus.srv"
 
 [mode]
 type = "rpc"
