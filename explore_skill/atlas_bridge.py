@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import time
 
-from robonix_py import Capability
+from robonix_api import Capability
 
 from .controller import ExploreController
 
@@ -45,7 +45,12 @@ def resolve_inputs(deadline_s: float = 60.0) -> dict[str, str]:
         for key, (cid, transport) in REQUIRED_INPUTS.items():
             if key in resolved:
                 continue
-            ep = cap.query(cid, transport=transport)
+            try:
+                ch = cap.connect(contract_id=cid, transport=transport)
+            except Exception:  # noqa: BLE001
+                continue
+            ep = ch.endpoint
+            ch.close()
             if ep:
                 resolved[key] = ep
                 log.info("resolved %s [%s] → %s", cid, transport, ep)
@@ -121,11 +126,11 @@ def cancel(req: CancelExplore_Request) -> CancelExplore_Response:
 
 
 # ── lifecycle ────────────────────────────────────────────────────────────────
-# Skills split init from up: rbnx boot calls Driver(CMD_INIT) on every
-# package and stops there for skills (state = INITIALIZED). The executor
-# sends Driver(CMD_UP) just-in-time on the first MCP call, which is when
-# the skill actually allocates hot resources (ROS subs, frontier loop, …).
-# See robonix/docs/cap-lifecycle.md for the full state machine.
+# Skills split init from activate: rbnx boot calls Driver(CMD_INIT) on
+# every package and stops there for skills (state = INITIALIZED). The
+# executor sends Driver(CMD_ACTIVATE) just-in-time on the first MCP
+# call, which is when the skill actually allocates hot resources (ROS
+# subs, frontier loop, …). See docs/cap-lifecycle.md for the full FSM.
 @cap.on_init
 def init(cfg):
     """CMD_INIT: light. The state machine wants every cap to reach
@@ -136,16 +141,16 @@ def init(cfg):
     return cap.ready()
 
 
-@cap.on_up
-def up(cfg):
-    """CMD_UP: heavy. Resolve the upstream contracts NOW (executor only
-    sends CMD_UP when there's actually a request to satisfy, by which
-    point map / nav should be ONLINE), then build the ExploreController
-    and start the rclpy thread. Idempotent on re-entry."""
+@cap.on_activate
+def activate(cfg):
+    """CMD_ACTIVATE: heavy. Resolve the upstream contracts NOW (executor
+    only sends CMD_ACTIVATE when there's actually a request to satisfy,
+    by which point map / nav should be RUNNABLE), then build the
+    ExploreController and start the rclpy thread. Idempotent on re-entry."""
     global ctrl
     if ctrl is not None:
-        log.info("CMD_UP — already up, no-op")
-        return cap.ready(state="online")
+        log.info("CMD_ACTIVATE — already runnable, no-op")
+        return cap.ready()
     inputs = resolve_inputs()
     log.info("dependencies resolved: %s", list(inputs.keys()))
     ctrl = ExploreController(
@@ -155,25 +160,24 @@ def up(cfg):
         nav_cancel_endpoint=inputs["nav_cancel"],
     )
     ctrl.start_runtime()
-    log.info("CMD_UP ok — controller running")
-    return cap.ready(state="online")
+    log.info("CMD_ACTIVATE ok — controller running")
+    return cap.ready()
 
 
-@cap.on_down
-def down():
-    """CMD_DOWN: stop the rclpy thread + drop the controller. Safe to call
-    repeatedly; the second call is a no-op. Future eviction policy lives
-    in the executor — when it decides this skill is cold, it sends DOWN
-    and we release the heavy resources here."""
+@cap.on_deactivate
+def deactivate():
+    """CMD_DEACTIVATE: stop the rclpy thread + drop the controller. Safe
+    to call repeatedly; the second call is a no-op. Executor's eviction
+    policy fires this when the skill has been idle long enough."""
     global ctrl
     if ctrl is None:
-        return cap.ready(state="offline")
+        return cap.ready()
     try:
         ctrl.stop_runtime()
     finally:
         ctrl = None
-    log.info("CMD_DOWN ok — controller stopped")
-    return cap.ready(state="offline")
+    log.info("CMD_DEACTIVATE ok — controller stopped")
+    return cap.ready()
 
 
 def main() -> int:

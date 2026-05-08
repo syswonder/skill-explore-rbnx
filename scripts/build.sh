@@ -25,8 +25,8 @@ mkdir -p "$BUILD/data"
 if command -v rbnx >/dev/null 2>&1; then
     FLAGS=()
     [[ "$CLEAN" == "1" ]] && FLAGS+=(--clean)
-    echo "[build] rbnx codegen --mcp --out-dir rbnx-build/codegen ${FLAGS[*]}"
-    rbnx codegen -p "$PKG" --mcp --out-dir rbnx-build/codegen "${FLAGS[@]}"
+    echo "[build] rbnx codegen --mcp ${FLAGS[*]}"
+    rbnx codegen -p "$PKG" --mcp "${FLAGS[@]}"
 else
     echo "[build] WARNING: rbnx not in PATH — skipping proto codegen"
     echo "[build]   install robonix-cli + run \`rbnx setup\` once from the robonix source root"

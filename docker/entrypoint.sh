@@ -14,8 +14,8 @@ source /opt/ros/humble/setup.bash
 cd /explore
 
 export PYTHONPATH="/explore:/explore/rbnx-build/codegen/proto_gen:/explore/rbnx-build/codegen/robonix_mcp_types:${PYTHONPATH:-}"
-if [ -d /robonix-py ]; then
-    export PYTHONPATH="/robonix-py:${PYTHONPATH}"
+if [ -d /robonix-api ]; then
+    export PYTHONPATH="/robonix-api:${PYTHONPATH}"
 fi
 
 mkdir -p /explore/rbnx-build/data
