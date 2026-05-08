@@ -14,7 +14,7 @@
 manifestVersion: 1
 
 package:
-  name: explore
+  name: com.robonix.skill.explore
   version: 0.1.0
   vendor: robonix
   description: Frontier-based autonomous exploration skill.
