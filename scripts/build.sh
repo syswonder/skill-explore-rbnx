@@ -38,7 +38,7 @@ if ! command -v docker >/dev/null 2>&1; then
     exit 1
 fi
 
-DOCKER_BUILD_FLAGS=()
+DOCKER_BUILD_FLAGS=(--network=host)
 [[ "$CLEAN" == "1" ]] && DOCKER_BUILD_FLAGS+=(--no-cache)
 
 if [[ "$CLEAN" != "1" ]] && docker image inspect "$IMG" >/dev/null 2>&1; then
