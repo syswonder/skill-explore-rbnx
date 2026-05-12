@@ -49,7 +49,7 @@ def resolve_inputs(deadline_s: float = 60.0) -> dict[str, str]:
                 cap_view = ATLAS.find_unique_capability(
                     contract_id=cid, transport=transport,
                 )
-                ch = explore.connect_capability(cap_view, cid, transport)
+                ch = explore_skill.connect_capability(cap_view, cid, transport)
             except Exception:  # noqa: BLE001
                 continue
             ep = ch.endpoint
