@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import time
 
-from robonix_api import Capability, Ok, Err, Deferred
+from robonix_api import ATLAS, Skill, Ok, Err, Deferred
 
 from .controller import ExploreController
 
@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO,
                     format="[explore] %(levelname)s %(message)s")
 log = logging.getLogger("explore_rbnx")
 
-cap = Capability(id="explore", namespace="robonix/skill/explore")
+cap = Skill(id="explore", namespace="robonix/skill/explore")
 ctrl: ExploreController | None = None
 
 # Atlas-resolved inputs the skill consumes. Hard-fail if any required
@@ -46,7 +46,10 @@ def resolve_inputs(deadline_s: float = 60.0) -> dict[str, str]:
             if key in resolved:
                 continue
             try:
-                ch = cap.connect(contract_id=cid, transport=transport)
+                cap_view = ATLAS.find_unique_capability(
+                    contract_id=cid, transport=transport,
+                )
+                ch = cap.connect_capability(cap_view, cid, transport)
             except Exception:  # noqa: BLE001
                 continue
             ep = ch.endpoint
