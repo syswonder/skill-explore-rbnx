@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO,
                     format="[explore] %(levelname)s %(message)s")
 log = logging.getLogger("explore_rbnx")
 
-explore = Skill(id="explore", namespace="robonix/skill/explore")
+explore_skill = Skill(id="explore", namespace="robonix/skill/explore")
 ctrl: ExploreController | None = None
 
 # Atlas-resolved inputs the skill consumes. Hard-fail if any required
@@ -78,7 +78,7 @@ from explore_mcp import (  # noqa: E402
 )
 
 
-@explore.mcp("robonix/skill/explore/explore")
+@explore_skill.mcp("robonix/skill/explore/explore")
 def explore(req: Explore_Request) -> Explore_Response:
     """Start an autonomous exploration task. Returns a task_id; poll
     status() to track."""
@@ -94,7 +94,7 @@ def explore(req: Explore_Request) -> Explore_Response:
         return Explore_Response(accepted=False, task_id="", message=str(e))
 
 
-@explore.mcp("robonix/skill/explore/status")
+@explore_skill.mcp("robonix/skill/explore/status")
 def status(req: GetExploreStatus_Request) -> GetExploreStatus_Response:
     """Poll progress of a running exploration task. Empty task_id = most recent."""
     if ctrl is None:
@@ -119,7 +119,7 @@ def status(req: GetExploreStatus_Request) -> GetExploreStatus_Response:
     )
 
 
-@explore.mcp("robonix/skill/explore/cancel")
+@explore_skill.mcp("robonix/skill/explore/cancel")
 def cancel(req: CancelExplore_Request) -> CancelExplore_Response:
     """Abort the active exploration. Idempotent."""
     if ctrl is None:
@@ -134,7 +134,7 @@ def cancel(req: CancelExplore_Request) -> CancelExplore_Response:
 # executor sends Driver(CMD_ACTIVATE) just-in-time on the first MCP
 # call, which is when the skill actually allocates hot resources (ROS
 # subs, frontier loop, …). See docs/cap-lifecycle.md for the full FSM.
-@explore.on_init
+@explore_skill.on_init
 def init(cfg):
     """CMD_INIT: light. The state machine wants every cap to reach
     INITIALIZED at boot time even if its upstream peers are still warming
@@ -144,7 +144,7 @@ def init(cfg):
     return Ok()
 
 
-@explore.on_activate
+@explore_skill.on_activate
 def activate():
     """CMD_ACTIVATE: heavy. Resolve the upstream contracts NOW (executor
     only sends CMD_ACTIVATE when there's actually a request to satisfy,
@@ -167,7 +167,7 @@ def activate():
     return Ok()
 
 
-@explore.on_deactivate
+@explore_skill.on_deactivate
 def deactivate():
     """CMD_DEACTIVATE: stop the rclpy thread + drop the controller. Safe
     to call repeatedly; the second call is a no-op. Executor's eviction
@@ -184,7 +184,7 @@ def deactivate():
 
 
 def main() -> int:
-    explore.run()
+    explore_skill.run()
     if ctrl is not None:
         ctrl.stop_runtime()
     return 0
