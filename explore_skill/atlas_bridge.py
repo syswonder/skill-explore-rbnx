@@ -145,10 +145,10 @@ def init(cfg):
 
 
 @cap.on_activate
-def activate(cfg):
+def activate():
     """CMD_ACTIVATE: heavy. Resolve the upstream contracts NOW (executor
     only sends CMD_ACTIVATE when there's actually a request to satisfy,
-    by which point map / nav should be RUNNABLE), then build the
+    by which point map / nav should be ACTIVE), then build the
     ExploreController and start the rclpy thread. Idempotent on re-entry."""
     global ctrl
     if ctrl is not None:
