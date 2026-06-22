@@ -33,6 +33,20 @@ Returns `{known, state, area_m2, frontiers_left, elapsed_s, eta_s, detail}`.
 
 Abort the active exploration. Idempotent.
 
+## Usage pattern (IMPORTANT — thread the task_id)
+
+1. Call `explore` ONCE. It returns immediately with a `task_id`. **Save that
+   exact `task_id`.**
+2. To monitor, call `status` with that SAME `task_id` — repeatedly, until
+   `state` is a terminal value (`done | timeout | canceled | error`). Do not
+   call `explore` again to monitor; that starts nothing new (a task is already
+   running) and loses your handle.
+3. To stop it, call `cancel` with that SAME `task_id`.
+
+Always pass the real `task_id` from step 1 to `status`/`cancel`. Passing an
+empty `task_id` relies on a "most recent task" fallback that is ambiguous and
+can fail — never depend on it.
+
 ## Behaviour
 
 1. Wait for `/map` (mapping service publishes it).
