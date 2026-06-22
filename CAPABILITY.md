@@ -9,7 +9,7 @@ way. User-invocable via the LLM/pilot.
 
 ### `robonix/skill/explore/explore`
 
-Start an exploration task. Returns immediately with a `task_id`; poll
+Start an exploration task. Returns immediately with a `run_id`; poll
 `status` to track progress.
 
 | param            | type   | default | meaning                                    |
@@ -18,33 +18,34 @@ Start an exploration task. Returns immediately with a `task_id`; poll
 | `timeout_s`      | float  | 600     | hard ceiling, 0 = no timeout               |
 | `max_speed_m_s`  | float  | 0.25    | safety cap on forward speed during explore |
 
-Returns `{accepted, task_id, message}`. `accepted=false` if a task is
+Returns `{accepted, run_id, message}`. `accepted=false` if a task is
 already running.
 
 ### `robonix/skill/explore/status`
 
-Poll an exploration's progress. Empty `task_id` returns the most
+Poll an exploration's progress. Empty `run_id` returns the most
 recent task.
 
 Returns `{known, state, area_m2, frontiers_left, elapsed_s, eta_s, detail}`.
-`state ∈ {idle | exploring | done | timeout | canceled | error}`.
+`state ∈ {PENDING | RUNNING | SUCCEEDED | FAILED | CANCELED | TIMEOUT}`
+(terminal: SUCCEEDED / FAILED / CANCELED / TIMEOUT).
 
 ### `robonix/skill/explore/cancel`
 
 Abort the active exploration. Idempotent.
 
-## Usage pattern (IMPORTANT — thread the task_id)
+## Usage pattern (IMPORTANT — thread the run_id)
 
-1. Call `explore` ONCE. It returns immediately with a `task_id`. **Save that
-   exact `task_id`.**
-2. To monitor, call `status` with that SAME `task_id` — repeatedly, until
-   `state` is a terminal value (`done | timeout | canceled | error`). Do not
-   call `explore` again to monitor; that starts nothing new (a task is already
-   running) and loses your handle.
-3. To stop it, call `cancel` with that SAME `task_id`.
+1. Call `explore` ONCE. It returns immediately with a `run_id`. **Save that
+   exact `run_id`.**
+2. To monitor, call `status` with that SAME `run_id` — repeatedly, until
+   `state` is a terminal value (`SUCCEEDED | FAILED | CANCELED | TIMEOUT`). Do
+   not call `explore` again to monitor; that starts nothing new (a task is
+   already running) and loses your handle.
+3. To stop it, call `cancel` with that SAME `run_id`.
 
-Always pass the real `task_id` from step 1 to `status`/`cancel`. Passing an
-empty `task_id` relies on a "most recent task" fallback that is ambiguous and
+Always pass the real `run_id` from step 1 to `status`/`cancel`. Passing an
+empty `run_id` relies on a "most recent task" fallback that is ambiguous and
 can fail — never depend on it.
 
 ## Behaviour

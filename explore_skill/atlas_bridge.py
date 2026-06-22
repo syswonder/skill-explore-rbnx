@@ -78,39 +78,62 @@ from explore_mcp import (  # noqa: E402
 )
 
 
+# Map the controller's internal lifecycle words to the canonical async-status
+# state names the executor's poller understands (parse_state_name). The
+# executor treats unknown values as RUNNING, so the terminal words MUST map:
+# without this, `done`/`error` never reached SUCCEEDED/FAILED and the executor
+# polled forever.
+_CANON_STATE = {
+    "idle": "PENDING",
+    "exploring": "RUNNING",
+    "running": "RUNNING",
+    "done": "SUCCEEDED",
+    "succeeded": "SUCCEEDED",
+    "timeout": "TIMEOUT",
+    "canceled": "CANCELED",
+    "cancelled": "CANCELED",
+    "error": "FAILED",
+    "failed": "FAILED",
+}
+
+
+def _canonical_state(state: str) -> str:
+    return _CANON_STATE.get(str(state).lower(), str(state).upper())
+
+
 @explore_skill.mcp("robonix/skill/explore/explore")
 def explore(req: Explore_Request) -> Explore_Response:
-    """Start an autonomous exploration task. Returns a task_id; poll
-    status() to track."""
+    """Start an autonomous exploration task. Returns a run_id; poll
+    status() with that run_id to track."""
     if ctrl is None:
-        return Explore_Response(accepted=False, task_id="", message="controller not initialized")
+        return Explore_Response(accepted=False, run_id="", message="controller not initialized")
     try:
         handle = ctrl.start(area_hint=req.area_hint,
                             timeout_s=float(req.timeout_s),
                             max_speed_m_s=float(req.max_speed_m_s))
-        return Explore_Response(accepted=True, task_id=handle.task_id,
+        return Explore_Response(accepted=True, run_id=handle.task_id,
                                 message=handle.detail)
     except RuntimeError as e:
-        return Explore_Response(accepted=False, task_id="", message=str(e))
+        return Explore_Response(accepted=False, run_id="", message=str(e))
 
 
 @explore_skill.mcp("robonix/skill/explore/status")
 def status(req: GetExploreStatus_Request) -> GetExploreStatus_Response:
-    """Poll progress of a running exploration task. Empty task_id = most recent."""
+    """Poll progress of a running exploration task. Empty run_id = most recent."""
     if ctrl is None:
         return GetExploreStatus_Response(
-            known=False, state="idle", area_m2=0.0, frontiers_left=0,
+            known=False, state="PENDING", area_m2=0.0, frontiers_left=0,
             elapsed_s=0.0, eta_s=-1.0, detail="controller not initialized",
         )
-    s = ctrl.status(req.task_id or None)
+    s = ctrl.status(req.run_id or None)
     if s is None:
         return GetExploreStatus_Response(
-            known=False, state="idle", area_m2=0.0, frontiers_left=0,
+            known=False, state="PENDING", area_m2=0.0, frontiers_left=0,
             elapsed_s=0.0, eta_s=-1.0, detail="no task with that id",
         )
     return GetExploreStatus_Response(
         known=True,
-        state=str(s.get("state", "unknown")),
+        state=_canonical_state(s.get("state", "unknown")),
         area_m2=float(s.get("area_m2", 0.0)),
         frontiers_left=int(s.get("frontiers_left", 0)),
         elapsed_s=float(s.get("elapsed_s", 0.0)),
@@ -124,7 +147,7 @@ def cancel(req: CancelExplore_Request) -> CancelExplore_Response:
     """Abort the active exploration. Idempotent."""
     if ctrl is None:
         return CancelExplore_Response(ok=False, message="controller not initialized")
-    ok, msg = ctrl.cancel(req.task_id or None)
+    ok, msg = ctrl.cancel(req.run_id or None)
     return CancelExplore_Response(ok=ok, message=msg)
 
 

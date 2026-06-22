@@ -267,7 +267,7 @@ class ExploreController:
         # robot stops moving immediately rather than after the leg
         # finishes.
         try:
-            self._nav_cancel_rpc(task_id="")
+            self._nav_cancel_rpc(run_id="")
         except Exception as e:  # noqa: BLE001
             log.warning("nav cancel rpc failed: %s", e)
         return True, f"cancel requested for {t.task_id}"
@@ -542,8 +542,9 @@ class ExploreController:
             time.sleep(self.NAV_POLL_PERIOD_S)
         return False, "leg timeout"
 
-    def _nav_cancel_rpc(self, task_id: str = "") -> None:
-        self._mcp_call_sync("cancel", {"goal_id": task_id})
+    def _nav_cancel_rpc(self, run_id: str = "") -> None:
+        # navigation/cancel takes `run_id` (empty = cancel the active goal).
+        self._mcp_call_sync("cancel", {"run_id": run_id})
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
