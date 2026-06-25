@@ -21,7 +21,7 @@ Start an exploration task. Returns immediately with a `run_id`; poll
 Returns `{accepted, run_id, message}`. `accepted=false` if a task is
 already running.
 
-### `robonix/skill/explore/status`
+### `robonix/skill/explore/explore/status`
 
 Poll an exploration's progress. Empty `run_id` returns the most
 recent task.
@@ -30,7 +30,7 @@ Returns `{known, state, area_m2, frontiers_left, elapsed_s, eta_s, detail}`.
 `state ∈ {PENDING | RUNNING | SUCCEEDED | FAILED | CANCELED | TIMEOUT}`
 (terminal: SUCCEEDED / FAILED / CANCELED / TIMEOUT).
 
-### `robonix/skill/explore/cancel`
+### `robonix/skill/explore/explore/cancel`
 
 Abort the active exploration. Idempotent.
 
@@ -44,9 +44,7 @@ Abort the active exploration. Idempotent.
    already running) and loses your handle.
 3. To stop it, call `cancel` with that SAME `run_id`.
 
-Always pass the real `run_id` from step 1 to `status`/`cancel`. Passing an
-empty `run_id` relies on a "most recent task" fallback that is ambiguous and
-can fail — never depend on it.
+Passing an empty `run_id` uses the most recent exploration task.
 
 ## Behaviour
 
@@ -81,8 +79,8 @@ hardcoded inter-package topic names.
 |-----------------|------------------------------------------|-----------|
 | map_topic       | robonix/service/map/occupancy_grid       | ROS2      |
 | nav_navigate    | robonix/service/navigation/navigate      | MCP       |
-| nav_status      | robonix/service/navigation/status        | MCP       |
-| nav_cancel      | robonix/service/navigation/cancel        | MCP       |
+| nav_status      | robonix/service/navigation/navigate/status | MCP     |
+| nav_cancel      | robonix/service/navigation/navigate/cancel | MCP     |
 
 Skill refuses to start if any of these is missing — there is no
 hardcoded fallback (packaging-spec invariant #1).

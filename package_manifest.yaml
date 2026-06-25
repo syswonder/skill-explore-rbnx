@@ -5,7 +5,7 @@
 # + cancel are sibling MCP tools. Internally orchestrates:
 #   - service/map/occupancy_grid     (read; pick frontier targets)
 #   - service/navigation/navigate    (drive to chosen frontier)
-#   - service/navigation/status      (poll goal completion)
+#   - service/navigation/navigate/status      (poll goal completion)
 #
 # Doesn't subscribe to lidar / odom directly — collision avoidance is
 # the nav service's job, this skill only chooses goals. Same design
@@ -30,7 +30,7 @@ capabilities:
     path: capabilities/driver.v1.toml
   - name: robonix/skill/explore/explore
     path: capabilities/explore.v1.toml
-  - name: robonix/skill/explore/status
+  - name: robonix/skill/explore/explore/status
     path: capabilities/status.v1.toml
-  - name: robonix/skill/explore/cancel
+  - name: robonix/skill/explore/explore/cancel
     path: capabilities/cancel.v1.toml
