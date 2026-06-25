@@ -33,8 +33,8 @@ REQUIRED_INPUTS = {
     # (see examples/webots/services/simple_nav/package_manifest.yaml header).
     "map_topic":     ("robonix/service/map/occupancy_grid", "ros2"),
     "nav_navigate":  ("robonix/service/navigation/navigate", "mcp"),
-    "nav_status":    ("robonix/service/navigation/status", "mcp"),
-    "nav_cancel":    ("robonix/service/navigation/cancel", "mcp"),
+    "nav_status":    ("robonix/service/navigation/navigate/status", "mcp"),
+    "nav_cancel":    ("robonix/service/navigation/navigate/cancel", "mcp"),
 }
 
 
@@ -65,7 +65,7 @@ def resolve_inputs(deadline_s: float = 60.0) -> dict[str, str]:
         f"explore skill cannot find dependencies on atlas: missing "
         f"{[REQUIRED_INPUTS[k][0] for k in missing]}. The skill needs a "
         f"running mapping service (occupancy_grid) and navigation service "
-        f"(navigate/status/cancel) before it can start. There is "
+        f"(navigate with status/cancel) before it can start. There is "
         f"intentionally no hardcoded fallback — packaging-spec invariant #1."
     )
 
@@ -106,7 +106,7 @@ def explore(req: Explore_Request) -> Explore_Response:
     """Start an autonomous exploration task. Returns a run_id; poll
     status() with that run_id to track."""
     if ctrl is None:
-        return Explore_Response(accepted=False, run_id="", message="controller not initialized")
+        raise RuntimeError("controller not initialized")
     try:
         handle = ctrl.start(area_hint=req.area_hint,
                             timeout_s=float(req.timeout_s),
@@ -117,14 +117,11 @@ def explore(req: Explore_Request) -> Explore_Response:
         return Explore_Response(accepted=False, run_id="", message=str(e))
 
 
-@explore_skill.mcp("robonix/skill/explore/status")
+@explore_skill.mcp("robonix/skill/explore/explore/status")
 def status(req: GetExploreStatus_Request) -> GetExploreStatus_Response:
     """Poll progress of a running exploration task. Empty run_id = most recent."""
     if ctrl is None:
-        return GetExploreStatus_Response(
-            known=False, state="PENDING", area_m2=0.0, frontiers_left=0,
-            elapsed_s=0.0, eta_s=-1.0, detail="controller not initialized",
-        )
+        raise RuntimeError("controller not initialized")
     s = ctrl.status(req.run_id or None)
     if s is None:
         return GetExploreStatus_Response(
@@ -142,11 +139,11 @@ def status(req: GetExploreStatus_Request) -> GetExploreStatus_Response:
     )
 
 
-@explore_skill.mcp("robonix/skill/explore/cancel")
+@explore_skill.mcp("robonix/skill/explore/explore/cancel")
 def cancel(req: CancelExplore_Request) -> CancelExplore_Response:
     """Abort the active exploration. Idempotent."""
     if ctrl is None:
-        return CancelExplore_Response(ok=False, message="controller not initialized")
+        raise RuntimeError("controller not initialized")
     ok, msg = ctrl.cancel(req.run_id or None)
     return CancelExplore_Response(ok=ok, message=msg)
 

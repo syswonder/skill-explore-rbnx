@@ -1,8 +1,8 @@
-# robonix/skill/explore/status — poll progress of a running explore.
+# robonix/skill/explore/explore/status — poll progress of a running explore.
 # Pilot calls this between rounds to decide whether to wait or to
 # proceed to navigate-class skills.
 [contract]
-id      = "robonix/skill/explore/status"
+id      = "robonix/skill/explore/explore/status"
 version = "1"
 kind    = "skill"
 idl     = "explore/srv/GetExploreStatus.srv"

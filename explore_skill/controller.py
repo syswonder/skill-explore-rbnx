@@ -19,7 +19,7 @@ Threading:
   - heartbeat thread (in atlas_bridge): unrelated.
 
 Nav integration:
-  The skill calls service/navigation/{navigate,status,cancel} as
+  The skill calls service/navigation/navigate and its status/cancel controls as
   gRPC RPCs against the endpoints atlas resolved at startup. We do
   NOT subscribe to /goal_pose or /cmd_vel — that would skip the nav
   service's contract surface and break the abstraction.
@@ -524,26 +524,24 @@ class ExploreController:
         }
         resp = self._mcp_call_sync("navigate", {"goal": goal_pose})
         if not resp.get("accepted", False):
-            return False, f"goal rejected: {resp.get('status_message', '')}"
-        # Navigate.srv response carries goal_id directly; status_message
-        # is free-form text only.
-        goal_id = resp.get("goal_id", "")
+            return False, f"goal rejected: {resp.get('detail', '')}"
+        run_id = resp.get("run_id", "")
 
-        # Poll status.
+        # Poll status. Empty run_id is allowed: navigation falls back to the
+        # most recent run.
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             if cancel_evt.cancel_requested:
                 return False, "canceled during nav"
-            sresp = self._mcp_call_sync("status", {"goal_id": goal_id})
+            sresp = self._mcp_call_sync("status", {"run_id": run_id})
             if sresp:
-                state = sresp.get("state", "")
-                if state in ("succeeded", "aborted", "cancelled", "canceled"):
-                    return state == "succeeded", f"nav terminal: {state}"
+                state = str(sresp.get("state", "")).upper()
+                if state in ("SUCCEEDED", "FAILED", "CANCELED", "TIMEOUT"):
+                    return state == "SUCCEEDED", f"nav terminal: {state}"
             time.sleep(self.NAV_POLL_PERIOD_S)
         return False, "leg timeout"
 
     def _nav_cancel_rpc(self, run_id: str = "") -> None:
-        # navigation/cancel takes `run_id` (empty = cancel the active goal).
         self._mcp_call_sync("cancel", {"run_id": run_id})
 
 
