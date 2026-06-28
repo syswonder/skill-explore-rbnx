@@ -20,4 +20,9 @@ fi
 
 mkdir -p /explore/rbnx-build/data
 
-exec python3 -m explore_skill.atlas_bridge 2>&1 | sed 's/^/[explore] /'
+# Run the skill as PID 1 so its stdout/stderr flow straight to the container
+# log and SIGTERM reaches it directly. Do NOT pipe through `sed` for a prefix:
+# `sed` block-buffers in a pipe, so the skill's log lines never flushed to the
+# container's stdout and `rbnx logs -t com.robonix.skill.explore` showed
+# nothing. rbnx already tags each component's output, so no prefix is needed.
+exec python3 -u -m explore_skill.atlas_bridge
