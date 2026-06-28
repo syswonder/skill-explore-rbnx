@@ -1,3 +1,7 @@
+---
+description: Autonomous frontier exploration — drives the robot to map and catalog its surroundings (occupancy grid + semantic object registry).
+---
+
 # explore_rbnx — autonomous environment exploration skill
 
 Drives the robot through frontier-based exploration of its surroundings,
