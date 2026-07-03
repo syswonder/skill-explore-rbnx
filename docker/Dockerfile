@@ -8,7 +8,7 @@
 # nav service is reachable on 127.0.0.1.
 FROM ros:humble-ros-base
 
-# ── TUNA mirrors for GFW-bound networks ─────────────────────────────
+# ── TUNA mirrors ───────────────────────────────────────────────────
 # Swap apt sources (Ubuntu/ports + ROS 2) to TUNA. Use `find` + sed
 # --follow-symlinks because /etc/apt/sources.list.d/ros2.sources is
 # a symlink into /usr/share/ros-apt-source/ in the upstream ros image.
@@ -45,6 +45,7 @@ RUN apt-get update \
         python3-yaml \
         ros-humble-tf2-ros \
         ros-humble-tf-transformations \
+        ros-humble-rmw-zenoh-cpp \
  && rm -rf /var/lib/apt/lists/*
 
 # Python deps:
@@ -63,9 +64,8 @@ COPY entrypoint.sh /entrypoint.sh
 COPY no_shm_profile.xml /etc/fastrtps_no_shm.xml
 RUN chmod +x /entrypoint.sh
 
-# Match mapping's RMW choice so cross-container DDS works on the same
-# bus without bridge magic (FastRTPS UDP-only profile).
+# Left for operators who explicitly override RMW back to FastRTPS.
 ENV FASTRTPS_DEFAULT_PROFILES_FILE=/etc/fastrtps_no_shm.xml
-ENV RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp
 
 ENTRYPOINT ["/entrypoint.sh"]

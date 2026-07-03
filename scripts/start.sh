@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MulanPSL-2.0
 # explore_rbnx start phase — docker-run wrapper.
 #
-# Container shape: --network host + --ipc=host + FastRTPS UDP-only so
-# the skill can subscribe to /map (mapping container) and call the nav
+# Container shape: --network host + --ipc=host so the skill can
+# subscribe to /map (mapping container) and call the nav
 # service's gRPC endpoint without DDS isolation getting in the way.
 #
 # Trap: when boot SIGTERMs our PGID, this trap stops the container so
@@ -28,6 +28,17 @@ if [[ -n "${RBNX_CONFIG_FILE:-}" ]]; then
     EXTRA_MOUNTS+=(-v "${RBNX_CONFIG_FILE}:${RBNX_CONFIG_FILE}:ro")
 fi
 
+declare -a ZENOH_ARGS=()
+if [[ -n "${ROBONIX_ZENOH_ROUTER:-}" ]]; then
+    ZENOH_ARGS=(-e "ROBONIX_ZENOH_ROUTER=${ROBONIX_ZENOH_ROUTER}")
+fi
+if [[ -n "${ROBONIX_ZENOH_MODE:-}" ]]; then
+    ZENOH_ARGS+=(-e "ROBONIX_ZENOH_MODE=${ROBONIX_ZENOH_MODE}")
+fi
+if [[ -n "${ROBONIX_ZENOH_LISTEN:-}" ]]; then
+    ZENOH_ARGS+=(-e "ROBONIX_ZENOH_LISTEN=${ROBONIX_ZENOH_LISTEN}")
+fi
+
 exec docker run --rm \
     --name "$CT" \
     --network host \
@@ -37,6 +48,8 @@ exec docker run --rm \
     -e ROBONIX_PKG_HOST_DIR="$(pwd)" \
     -e RBNX_CONFIG_FILE="${RBNX_CONFIG_FILE:-}" \
     -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
+    -e RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_zenoh_cpp}" \
+    "${ZENOH_ARGS[@]}" \
     -v "$(pwd)":/explore \
     -v "$(rbnx path robonix-api)":/robonix-api:ro \
     "${EXTRA_MOUNTS[@]}" \
