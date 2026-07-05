@@ -9,11 +9,15 @@
 set -euo pipefail
 
 PKG="${RBNX_PACKAGE_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+# shellcheck disable=SC1091
+source "$PKG/scripts/docker_base_image.sh"
 cd "$PKG"
 
 BUILD="rbnx-build"
 CLEAN="${RBNX_BUILD_CLEAN:-}"
 IMG="${ROBONIX_EXPLORE_IMAGE:-robonix-explore}"
+ROS_BASE_IMAGE="${ROBONIX_EXPLORE_ROS_BASE_IMAGE:-robonix-ros:humble-ros-base}"
+UPSTREAM_ROS_BASE_IMAGE="ros:humble-ros-base"
 
 if [[ "$CLEAN" == "1" ]]; then
     echo "[build] clean: removing $BUILD"
@@ -38,7 +42,8 @@ if ! command -v docker >/dev/null 2>&1; then
     exit 1
 fi
 
-DOCKER_BUILD_FLAGS=(--network=host)
+DOCKER_BUILD_FLAGS=(--network=host --pull=false --build-arg "ROS_BASE_IMAGE=${ROS_BASE_IMAGE}")
+robonix_ensure_local_base_image "$ROS_BASE_IMAGE" "$UPSTREAM_ROS_BASE_IMAGE"
 [[ "$CLEAN" == "1" ]] && DOCKER_BUILD_FLAGS+=(--no-cache)
 
 if [[ "$CLEAN" != "1" ]] && docker image inspect "$IMG" >/dev/null 2>&1; then

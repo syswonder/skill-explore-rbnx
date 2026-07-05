@@ -6,7 +6,8 @@
 # atlas-resolved /map and drives via the navigation service's gRPC.
 # --network host + --ipc=host at runtime so DDS reaches /map and the
 # nav service is reachable on 127.0.0.1.
-FROM ros:humble-ros-base
+ARG ROS_BASE_IMAGE=robonix-ros:humble-ros-base
+FROM ${ROS_BASE_IMAGE}
 
 # ── TUNA mirrors ───────────────────────────────────────────────────
 # Swap apt sources (Ubuntu/ports + ROS 2) to TUNA. Use `find` + sed
