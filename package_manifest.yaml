@@ -19,7 +19,7 @@ package:
   vendor: robonix
   description: Frontier-based autonomous exploration skill.
   tags: [skill, explore, frontier, navigation, mapping]
-  maintainers: [syswonder]
+  maintainers: [wheatfox <wheatfox17@icloud.com>]
   license: MulanPSL-2.0
 
 build: bash scripts/build.sh
