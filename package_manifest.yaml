@@ -16,7 +16,6 @@ manifestVersion: 1
 package:
   name: robonix.skill.explore
   version: 0.1.0
-  vendor: robonix
   description: Frontier-based autonomous exploration skill.
   tags: [skill, explore, frontier, navigation, mapping]
   maintainers: [wheatfox <wheatfox17@icloud.com>]
