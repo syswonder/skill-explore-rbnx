@@ -14,10 +14,11 @@
 manifestVersion: 1
 
 package:
-  name: com.robonix.skill.explore
+  name: robonix.skill.explore
   version: 0.1.0
   vendor: robonix
   description: Frontier-based autonomous exploration skill.
+  tags: [skill, explore, frontier, navigation, mapping]
   license: MulanPSL-2.0
 
 build: bash scripts/build.sh
