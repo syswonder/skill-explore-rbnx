@@ -10,6 +10,9 @@
 set -eo pipefail
 
 source /opt/ros/humble/setup.bash
+if [[ -f /explore/rbnx-build/codegen/ros2_idl/install/setup.bash ]]; then
+    source /explore/rbnx-build/codegen/ros2_idl/install/setup.bash
+fi
 
 configure_zenoh_session() {
     if [ "${RMW_IMPLEMENTATION:-}" != "rmw_zenoh_cpp" ] || [ -z "${ROBONIX_ZENOH_ROUTER:-}" ]; then

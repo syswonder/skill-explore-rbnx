@@ -29,8 +29,15 @@ mkdir -p "$BUILD/data"
 if command -v rbnx >/dev/null 2>&1; then
     FLAGS=()
     [[ "$CLEAN" == "1" ]] && FLAGS+=(--clean)
-    echo "[build] rbnx codegen --mcp ${FLAGS[*]}"
-    rbnx codegen -p "$PKG" --mcp "${FLAGS[@]}"
+    echo "[build] rbnx codegen --mcp --ros2 ${FLAGS[*]}"
+    rbnx codegen -p "$PKG" --mcp --ros2 "${FLAGS[@]}"
+
+    set +u
+    source "/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
+    set -u
+    ROS2_IDL="$PKG/rbnx-build/codegen/ros2_idl"
+    echo "[build] colcon build (Robonix ROS 2 interfaces)"
+    (cd "$ROS2_IDL" && colcon build)
 else
     echo "[build] WARNING: rbnx not in PATH — skipping proto codegen"
     echo "[build]   install robonix-cli + run \`rbnx setup\` once from the robonix source root"
