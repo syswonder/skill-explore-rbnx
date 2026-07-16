@@ -30,7 +30,7 @@ if command -v rbnx >/dev/null 2>&1; then
     FLAGS=(--mcp)
     [[ "$CLEAN" == "1" ]] && FLAGS+=(--clean)
     echo "[build] rbnx codegen ${FLAGS[*]}"
-    rbnx codegen -p "$PKG" "${FLAGS[@]}"
+    bash "$PKG/scripts/run_python_codegen.sh" "$PKG" "${FLAGS[@]}"
 else
     echo "[build] WARNING: rbnx not in PATH — skipping proto codegen"
     echo "[build]   install robonix-cli + run \`rbnx setup\` once from the robonix source root"
