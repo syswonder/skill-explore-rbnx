@@ -53,8 +53,8 @@ RUN apt-get update \
 #   grpcio/protobuf — atlas client
 #   fastmcp/uvicorn — MCP server for the 3 skill tools (LLM-callable)
 RUN pip install --no-cache-dir \
-        grpcio>=1.60.0 \
-        protobuf>=4.25.0 \
+        grpcio==1.80.0 \
+        protobuf==6.33.6 \
         pyyaml>=6.0 \
         numpy \
         fastmcp \
