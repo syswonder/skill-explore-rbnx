@@ -77,11 +77,10 @@ class ExploreController:
     # camera has pointed at. 8 sectors of 45° each. A cell with all
     # 8 sectors filled has been observed from every direction.
     YAW_SECTORS = 8
-    # Trigger a 360° in-place rotation sweep when the cell at current
-    # robot pose has fewer than this many sectors covered, OR after
-    # every Nth nav leg (whichever comes first). The sweep makes the
-    # camera look at corners the lateral motion missed — important
-    # for the semantic map (object detector needs every facing).
+    # A 360° sweep is expensive for wheel odometry, so only perform it
+    # periodically and when the current cell still lacks yaw coverage.
+    # Previously the OR condition swept at every newly reached cell,
+    # accumulating rotation drift and starving the global timeout.
     SWEEP_MIN_SECTORS = 6
     SWEEP_EVERY_N_LEGS = 3
 
@@ -367,7 +366,7 @@ class ExploreController:
                                   f"spinning to expand FOV ({n_frontiers} "
                                   f"raw clusters detected)")
                 log.info("[%s] %s", handle.task_id, handle.detail)
-                self._sweep_360(handle)
+                self._sweep_360(handle, deadline=deadline)
                 # After the spin, re-evaluate immediately rather than
                 # sleeping — the map should now be richer.
                 continue
@@ -378,9 +377,15 @@ class ExploreController:
                              f"size={target.size}, {n_frontiers} clusters left")
             log.info("[%s] %s", handle.task_id, handle.detail)
 
-            ok, msg = self._nav_navigate_blocking(tx, ty, yaw=None,
-                                                    timeout_s=self.NAV_GOAL_TIMEOUT_S,
-                                                    cancel_evt=handle)
+            leg_timeout = self._bounded_timeout(
+                self.NAV_GOAL_TIMEOUT_S, deadline)
+            if leg_timeout <= 0.0:
+                self._terminate(handle, "timeout",
+                                f"hit {handle.timeout_s}s ceiling")
+                return
+            ok, msg = self._nav_navigate_blocking(
+                tx, ty, yaw=None, timeout_s=leg_timeout,
+                cancel_evt=handle)
             if handle.cancel_requested:
                 self._terminate(handle, "canceled", "cancel during nav")
                 return
@@ -401,7 +406,7 @@ class ExploreController:
             #   - or every Nth leg as a periodic safety, in case the
             #     coverage tracker missed something
             if self._should_sweep(handle):
-                self._sweep_360(handle)
+                self._sweep_360(handle, deadline=deadline)
 
             # Brief settle before re-evaluating frontiers.
             time.sleep(self.LOOP_QUIET_PERIOD_S)
@@ -424,8 +429,9 @@ class ExploreController:
     # ── Sweep / coverage helpers ───────────────────────────────────
     def _should_sweep(self, handle: TaskHandle) -> bool:
         """Decide whether to do a 360° sweep at the current pose."""
-        if handle.legs_completed % self.SWEEP_EVERY_N_LEGS == 0:
-            return True
+        if handle.legs_completed <= 0 or \
+                handle.legs_completed % self.SWEEP_EVERY_N_LEGS != 0:
+            return False
         with self._lock:
             pose = self._latest_pose_xyyaw
             latest = self._latest_map
@@ -437,7 +443,15 @@ class ExploreController:
         sectors = self._viewed_sectors.get((cx, cy), set())
         return len(sectors) < self.SWEEP_MIN_SECTORS
 
-    def _sweep_360(self, handle: TaskHandle) -> None:
+    @staticmethod
+    def _bounded_timeout(requested_s: float,
+                         deadline: Optional[float]) -> float:
+        if deadline is None:
+            return requested_s
+        return max(0.0, min(requested_s, deadline - time.time()))
+
+    def _sweep_360(self, handle: TaskHandle, *,
+                   deadline: Optional[float]) -> None:
         """Send 4 nav goals at the current xy with yaw advanced 90°
         each time. Robot rotates in place 4 times → 360° sweep. The
         camera covers all 8 sectors over those 4 stops. Per-sector
@@ -451,13 +465,18 @@ class ExploreController:
         for step in (0.5 * math.pi, math.pi, 1.5 * math.pi, 2.0 * math.pi):
             if handle.cancel_requested:
                 return
+            segment_timeout = self._bounded_timeout(15.0, deadline)
+            if segment_timeout <= 0.0:
+                return
             target_yaw = yaw + step
             handle.detail = (f"sweep at ({x:.2f},{y:.2f}) "
                              f"yaw={math.degrees(target_yaw)%360:.0f}°")
             log.info("[%s] %s", handle.task_id, handle.detail)
-            self._nav_navigate_blocking(x, y, yaw=target_yaw,
-                                         timeout_s=15.0,
-                                         cancel_evt=handle)
+            ok, _ = self._nav_navigate_blocking(
+                x, y, yaw=target_yaw, timeout_s=segment_timeout,
+                cancel_evt=handle)
+            if not ok:
+                return
             time.sleep(0.5)
 
     # ── Nav RPC over MCP HTTP ──────────────────────────────────────
@@ -532,6 +551,7 @@ class ExploreController:
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             if cancel_evt.cancel_requested:
+                self._nav_cancel_rpc(run_id=run_id)
                 return False, "canceled during nav"
             sresp = self._mcp_call_sync("status", {"run_id": run_id})
             if sresp:
@@ -539,6 +559,7 @@ class ExploreController:
                 if state in ("SUCCEEDED", "FAILED", "CANCELED", "TIMEOUT"):
                     return state == "SUCCEEDED", f"nav terminal: {state}"
             time.sleep(self.NAV_POLL_PERIOD_S)
+        self._nav_cancel_rpc(run_id=run_id)
         return False, "leg timeout"
 
     def _nav_cancel_rpc(self, run_id: str = "") -> None:
