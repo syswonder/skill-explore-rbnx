@@ -53,7 +53,9 @@ if [[ "$compatible" != "1" ]]; then
 fi
 
 echo "[explore/codegen] rbnx codegen -p $PKG $*"
-PATH="$VENV/bin:$PATH" rbnx codegen -p "$PKG" "$@"
+RBNX_CODEGEN_PYTHON="$VENV/bin/python" \
+    PATH="$VENV/bin:$PATH" \
+    rbnx codegen -p "$PKG" "$@"
 
 CODEGEN_PYTHONPATH="$PKG/rbnx-build/codegen/proto_gen:$PKG/rbnx-build/codegen/robonix_mcp_types"
 PYTHONPATH="$CODEGEN_PYTHONPATH:${PYTHONPATH:-}" \

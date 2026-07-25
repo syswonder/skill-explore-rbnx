@@ -41,6 +41,16 @@ configure_zenoh_session
 
 cd /explore
 
+# start.sh generates these stubs with this image and bind-masks host proto_gen.
+# Fail before importing the skill so protobuf compatibility errors are explicit.
+PROTO_GEN=/explore/rbnx-build/codegen/proto_gen
+if [ ! -f "$PROTO_GEN/atlas_pb2.py" ] \
+    || [ ! -f "$PROTO_GEN/explore_pb2.py" ] \
+    || [ ! -f "$PROTO_GEN/robonix_contracts_pb2_grpc.py" ]; then
+    echo "[entrypoint] missing runtime-compatible protobuf stubs in $PROTO_GEN; rebuild and restart explore" >&2
+    exit 1
+fi
+
 export PYTHONPATH="/explore:/explore/rbnx-build/codegen/proto_gen:/explore/rbnx-build/codegen/robonix_mcp_types:${PYTHONPATH:-}"
 if [ -d /robonix-api ]; then
     export PYTHONPATH="/robonix-api:${PYTHONPATH}"

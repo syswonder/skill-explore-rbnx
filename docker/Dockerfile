@@ -54,6 +54,7 @@ RUN apt-get update \
 #   fastmcp/uvicorn — MCP server for the 3 skill tools (LLM-callable)
 RUN pip install --no-cache-dir \
         grpcio==1.80.0 \
+        grpcio-tools==1.76.0 \
         protobuf==6.33.6 \
         pyyaml>=6.0 \
         numpy \
