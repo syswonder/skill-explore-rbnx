@@ -16,6 +16,7 @@ class BuildConfigTest(unittest.TestCase):
         self.assertIn('PROTOBUF_VERSION="6.33.6"', helper)
         self.assertIn('GRPC_TOOLS_VERSION="1.76.0"', helper)
         self.assertIn('GRPCIO_VERSION="1.80.0"', helper)
+        self.assertIn('RBNX_CODEGEN_PYTHON="$VENV/bin/python"', helper)
         self.assertIn("protobuf==6.33.6", dockerfile)
         self.assertIn("grpcio==1.80.0", dockerfile)
         self.assertIn("grpcio-tools==1.76.0", dockerfile)
