@@ -51,14 +51,18 @@ RUN apt-get update \
 
 # Python deps:
 #   grpcio/protobuf — atlas client
-#   fastmcp/uvicorn — MCP server for the 3 skill tools (LLM-callable)
-RUN pip install --no-cache-dir \
-        grpcio==1.80.0 \
-        grpcio-tools==1.76.0 \
-        protobuf==6.33.6 \
-        pyyaml>=6.0 \
+#   MCP 1.x         — robonix-api still imports mcp.server.fastmcp.FastMCP
+#   fastmcp/uvicorn — MCP client/server support for the 3 skill tools
+RUN python3 -m pip install --no-cache-dir --upgrade \
+        'pip==25.3' 'setuptools==79.0.1' wheel \
+ && python3 -m pip install --no-cache-dir \
+        'grpcio==1.80.0' \
+        'grpcio-tools==1.76.0' \
+        'protobuf==6.33.6' \
+        'pyyaml>=6.0' \
         numpy \
-        fastmcp \
+        'mcp>=1.28.1,<2' \
+        'fastmcp>=3,<4' \
         uvicorn
 
 WORKDIR /explore

@@ -43,6 +43,12 @@ class BuildConfigTest(unittest.TestCase):
         self.assertIn("missing runtime-compatible protobuf stubs", entrypoint)
         self.assertIn("explore_pb2.py", entrypoint)
 
+    def test_runtime_keeps_robonix_api_on_mcp_v1(self) -> None:
+        """Prevent MCP 2.x from removing robonix-api's FastMCP import."""
+        dockerfile = (ROOT / "docker" / "Dockerfile").read_text()
+        self.assertIn("'mcp>=1.28.1,<2'", dockerfile)
+        self.assertIn("'fastmcp>=3,<4'", dockerfile)
+
 
 if __name__ == "__main__":
     unittest.main()

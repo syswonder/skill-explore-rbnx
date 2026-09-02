@@ -32,3 +32,5 @@ maps/*.pgm
 # OS
 .DS_Store
 Thumbs.db
+
+logs/
