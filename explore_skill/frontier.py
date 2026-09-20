@@ -36,17 +36,24 @@ OCC_THRESH = 50  # ≥ this counts as obstacle (matches nav2 convention)
 # examples/webots/config/nav2_params.yaml -- a clearance smaller than the
 # robot is not a safety check, and this one was 0.15.
 ROBOT_RADIUS_M = 0.22
-# Enough that a goal accepted here is not one nav2's inflation layer will
-# refuse the moment the robot arrives.
-SAFE_MARGIN_M = 0.06
-DEFAULT_CLEARANCE_M = ROBOT_RADIUS_M + SAFE_MARGIN_M
+# The chassis, and no more. nav2 plans this goal with the same radius and
+# runs an inflation layer on top of it; asking for chassis-plus-margin here,
+# against the raw map, charges for that margin twice and -- measured on two
+# live maps -- turns down every frontier in a furnished room.
+DEFAULT_CLEARANCE_M = ROBOT_RADIUS_M
 
-# How far short of the frontier line to stop. A centroid sits on the
+# How far short of the frontier line to aim. A centroid sits on the
 # free/unknown boundary by construction, so driving to it means driving to
 # the edge of the known world every time; stopping a little back puts the
 # robot in space that has been observed, still close enough that the sensors
 # cover what lies beyond.
+#
+# It is where the search starts, not a requirement. If the robot does not
+# fit there the line is walked in and out before the frontier is given up:
+# "stand exactly this far back" was never the goal, "get near it somewhere
+# the robot fits" is.
 DEFAULT_STANDOFF_M = 0.45
+_STANDOFF_STEP_M = 0.15
 
 
 @dataclass
@@ -206,7 +213,53 @@ def is_target_safe(gv: GridView, wx: float, wy: float,
     y0, y1 = max(0, cy - r), min(gv.height, cy + r + 1)
     x0, x1 = max(0, cx - r), min(gv.width,  cx + r + 1)
     patch = gv.data[y0:y1, x0:x1]
-    return bool(np.all(patch < OCC_THRESH))
+    # A disc, not the bounding square. A square of half-width r reaches
+    # r*sqrt(2) into its corners, so the test was quietly demanding 41% more
+    # room than it named -- which went unnoticed while the number was 0.15
+    # (0.21 at the corners, about the chassis) and turned down every frontier
+    # in the room the moment it was raised to the chassis itself. The robot's
+    # footprint is a circle and nav2 plans for a circle; so does this.
+    yy, xx = np.ogrid[y0 - cy:y1 - cy, x0 - cx:x1 - cx]
+    within = (yy * yy + xx * xx) <= r * r
+    return bool(np.all(patch[within] < OCC_THRESH))
+
+
+def approach_point(gv: GridView,
+                    robot_xy: Tuple[float, float],
+                    target_xy: Tuple[float, float],
+                    *,
+                    standoff_m: float,
+                    clearance_m: float,
+                    keepout: Optional[List[Tuple[float, float, float]]] = None
+                    ) -> Optional[Tuple[float, float]]:
+    """A point near `target_xy`, on the line back to the robot, that fits.
+
+    Starts at `standoff_m` and walks the line -- further back first, since
+    that is more observed ground, then closer in. Returns None only when no
+    point on the segment clears, which is a frontier genuinely unreachable
+    rather than one whose single sampled point happened to be against a wall.
+
+    Testing one point and discarding the cluster on failure is what left the
+    explorer spinning with two dozen clusters in view.
+    """
+    offsets = [standoff_m]
+    step = _STANDOFF_STEP_M
+    for i in range(1, 5):
+        offsets.append(standoff_m + i * step)
+        offsets.append(max(0.0, standoff_m - i * step))
+    seen: set[int] = set()
+    for offset in offsets:
+        key = int(round(offset * 100))
+        if key in seen:
+            continue
+        seen.add(key)
+        px, py = standoff_point(robot_xy, target_xy, offset)
+        if not is_target_safe(gv, px, py, safe_radius_m=clearance_m):
+            continue
+        if in_keepout(px, py, keepout):
+            continue
+        return (px, py)
+    return None
 
 
 def standoff_point(robot_xy: Tuple[float, float],
@@ -285,13 +338,15 @@ def score_clusters(clusters: List[FrontierCluster], gv: GridView,
         travel = ((wx - robot_xy[0]) ** 2 + (wy - robot_xy[1]) ** 2) ** 0.5
         if travel > max_distance_m:
             continue                             # too far — skip
-        gx, gy = standoff_point(robot_xy, (wx, wy), standoff_m)
-        # Checked where the robot will stand, not where the frontier is.
-        if not is_target_safe(gv, gx, gy, safe_radius_m=clearance_m):
-            continue                             # would crash — skip
-        if in_keepout(gx, gy, keepout):
-            continue                             # sensor-invisible obstacle
-        c_world.goal_xy = (gx, gy)
+        # Checked where the robot will stand, not where the frontier is,
+        # and along the whole line rather than at one point on it.
+        approach = approach_point(gv, robot_xy, (wx, wy),
+                                   standoff_m=standoff_m,
+                                   clearance_m=clearance_m,
+                                   keepout=keepout)
+        if approach is None:
+            continue                 # nowhere on the line fits — skip
+        c_world.goal_xy = approach
 
         penalty = 0.0
         if visited_cells:
