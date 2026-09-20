@@ -69,6 +69,12 @@ class ExploreController:
     # current robot pose are skipped. Forces the skill to clear the
     # current room before jumping to a far-away frontier.
     MAX_FRONTIER_DISTANCE_M = 6.0
+    # Clearance demanded of a goal, and how far short of the frontier
+    # line to stop. Defaults live in frontier.py next to the reasoning;
+    # they are named here so a deployment with a different chassis can
+    # override them without editing the algorithm.
+    TARGET_CLEARANCE_M = None   # None → frontier.DEFAULT_CLEARANCE_M
+    TARGET_STANDOFF_M = None    # None → frontier.DEFAULT_STANDOFF_M
     # Mark cells within this radius of the robot as "visited" each
     # time we update the pose. Used to deprioritise re-revisiting
     # already-cleared areas when multiple frontiers tie in score.
@@ -84,10 +90,21 @@ class ExploreController:
     SWEEP_MIN_SECTORS = 6
     SWEEP_EVERY_N_LEGS = 3
 
+    # How long a Scene object snapshot is reused before asking again.
+    # Furniture does not move on the timescale of an exploration leg, and
+    # a round-trip per frontier evaluation would be paid for nothing.
+    KEEPOUT_TTL_S = 10.0
+    # An entry bigger than this is a room, not an obstacle. list_objects
+    # still returns room entries for v1 compatibility, and one of those
+    # turned into a keep-out circle would blanket the map and end the
+    # exploration with "no safe frontier".
+    KEEPOUT_MAX_EXTENT_M = 2.0
+
     def __init__(self, *, map_topic: str,
                  nav_navigate_endpoint: str,
                  nav_status_endpoint: str,
-                 nav_cancel_endpoint: str):
+                 nav_cancel_endpoint: str,
+                 scene_objects_endpoint: Optional[str] = None):
         self.map_topic = map_topic
         # All three nav endpoints typically point at the same FastMCP
         # server (http://host:port/mcp/) — atlas hands us the URL each
@@ -99,6 +116,13 @@ class ExploreController:
             "status":   nav_status_endpoint,
             "cancel":   nav_cancel_endpoint,
         }
+        # Optional: Scene sees what the lidar cannot. None means this
+        # deployment has no Scene, and exploration proceeds without the
+        # extra keep-outs exactly as it did before.
+        self._scene_endpoint = scene_objects_endpoint
+        self._scene_client = None
+        self._keepout_cache: List[Tuple[float, float, float]] = []
+        self._keepout_stamp = 0.0
         self._lock = threading.Lock()
         self._latest_map: Any = None     # latest OccupancyGrid msg
         self._latest_pose_xyyaw: Optional[Tuple[float, float, float]] = None
@@ -348,10 +372,16 @@ class ExploreController:
                 continue
             with self._lock:
                 visited_snapshot = set(self._visited_cells)
+            pick_kwargs = {"keepout": self._keepout_circles()}
+            if self.TARGET_CLEARANCE_M is not None:
+                pick_kwargs["clearance_m"] = self.TARGET_CLEARANCE_M
+            if self.TARGET_STANDOFF_M is not None:
+                pick_kwargs["standoff_m"] = self.TARGET_STANDOFF_M
             target = pick_target(gv, pose,
                                   min_size=self.FRONTIER_MIN_SIZE_CELLS,
                                   max_distance_m=self.MAX_FRONTIER_DISTANCE_M,
-                                  visited_cells=visited_snapshot)
+                                  visited_cells=visited_snapshot,
+                                  **pick_kwargs)
             if target is None:
                 # No safe frontier picked, but quiet timer hasn't fired
                 # yet → the map likely doesn't have ENOUGH known-free
@@ -371,9 +401,14 @@ class ExploreController:
                 # sleeping — the map should now be richer.
                 continue
 
-            tx, ty = target.centroid_xy
-            handle.last_target_xy = (tx, ty)
-            handle.detail = (f"driving to frontier ({tx:.2f},{ty:.2f}) "
+            # The frontier is what was found; the standoff point is where
+            # the robot goes. Reporting the first and driving to the second
+            # keeps the overlay honest about both.
+            fx, fy = target.centroid_xy
+            tx, ty = target.drive_to
+            handle.last_target_xy = (fx, fy)
+            handle.detail = (f"driving to ({tx:.2f},{ty:.2f}), short of "
+                             f"frontier ({fx:.2f},{fy:.2f}) "
                              f"size={target.size}, {n_frontiers} clusters left")
             log.info("[%s] %s", handle.task_id, handle.detail)
 
@@ -485,6 +520,78 @@ class ExploreController:
     # endpoint URL for each contract; in practice all three point at
     # the same FastMCP server, but we keep them separate so a future
     # multi-nav setup still works.
+    def _keepout_circles(self) -> List[Tuple[float, float, float]]:
+        """Where Scene says there is furniture, as (x, y, radius) circles.
+
+        A tabletop is invisible to a lidar that passes under it, so the
+        occupancy grid calls that space free and a goal placed there ends
+        with the robot against a table leg. Scene has the object from the
+        camera; this asks for it.
+
+        Returns an empty list on any failure. The alternative -- refusing
+        to explore because an optional input is unavailable -- trades a
+        working explorer for a stricter one.
+        """
+        from .frontier import ROBOT_RADIUS_M
+
+        if not self._scene_endpoint:
+            return []
+        now = time.time()
+        if now - self._keepout_stamp < self.KEEPOUT_TTL_S:
+            return self._keepout_cache
+
+        resp = self._scene_mcp_call("list_objects", {})
+        circles: List[Tuple[float, float, float]] = []
+        for obj in (resp.get("objects") or []):
+            label = str(obj.get("label") or "")
+            if label == "robot":
+                continue                      # itself, not an obstacle
+            size_x = float(obj.get("size_x") or 0.0)
+            size_y = float(obj.get("size_y") or 0.0)
+            if size_x <= 0.0 or size_y <= 0.0:
+                continue                      # no footprint recorded
+            if max(size_x, size_y) > self.KEEPOUT_MAX_EXTENT_M:
+                continue                      # a room entry, not furniture
+            # Half the footprint diagonal covers the box whatever its yaw,
+            # and the chassis radius is added because the goal is where the
+            # robot's centre goes, not where its edge stops.
+            radius = (0.5 * math.hypot(size_x, size_y)
+                      + ROBOT_RADIUS_M)
+            circles.append((float(obj.get("x") or 0.0),
+                            float(obj.get("y") or 0.0), radius))
+
+        self._keepout_cache = circles
+        self._keepout_stamp = now
+        if circles:
+            log.info("keep-out from scene: %d object(s)", len(circles))
+        return circles
+
+    def _scene_mcp_call(self, tool: str, args: dict) -> dict:
+        """Scene is a different MCP server from navigation, so it gets its
+        own client rather than borrowing the nav one's base URL."""
+        import asyncio
+        try:
+            return asyncio.run(self._scene_mcp_call_async(tool, args))
+        except Exception as error:  # noqa: BLE001
+            log.warning("scene mcp call %s failed: %s", tool, error)
+            return {}
+
+    async def _scene_mcp_call_async(self, tool: str, args: dict) -> dict:
+        import json
+
+        from fastmcp import Client
+
+        if self._scene_client is None:
+            self._scene_client = Client(self._scene_endpoint)
+        async with self._scene_client as c:
+            result = await c.call_tool(tool, args)
+            if not result.content:
+                return {}
+            try:
+                return json.loads(result.content[0].text)
+            except Exception:  # noqa: BLE001
+                return {}
+
     def _ensure_mcp_client(self):
         if self._mcp_client is not None:
             return

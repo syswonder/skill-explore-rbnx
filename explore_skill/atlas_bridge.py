@@ -37,6 +37,36 @@ REQUIRED_INPUTS = {
     "nav_cancel":    ("robonix/service/navigation/navigate/cancel", "mcp"),
 }
 
+# Resolved if present, skipped if not. Scene knows where the furniture is
+# from the camera, which is the only way to avoid a table that a
+# chassis-height lidar passes straight under. A deployment without Scene
+# explores exactly as it did before -- so this must not become a required
+# input, or the skill stops working on the deployments that have no Scene.
+OPTIONAL_INPUTS = {
+    "scene_objects": ("robonix/system/scene/list_objects", "mcp"),
+}
+
+
+def resolve_optional_inputs() -> dict[str, str]:
+    """One attempt each, no waiting and no raising."""
+    resolved: dict[str, str] = {}
+    for key, (cid, transport) in OPTIONAL_INPUTS.items():
+        try:
+            cap_view = ATLAS.find_unique_capability(
+                contract_id=cid, transport=transport,
+            )
+            ch = explore_skill.connect_capability(cap_view, cid, transport)
+        except Exception:  # noqa: BLE001
+            log.info("optional input %s not on atlas; continuing without it",
+                     cid)
+            continue
+        ep = ch.endpoint
+        ch.close()
+        if ep:
+            resolved[key] = ep
+            log.info("resolved optional %s [%s] → %s", cid, transport, ep)
+    return resolved
+
 
 def resolve_inputs(deadline_s: float = 60.0) -> dict[str, str]:
     resolved: dict[str, str] = {}
@@ -175,12 +205,15 @@ def activate():
         log.info("CMD_ACTIVATE — already runnable, no-op")
         return Ok()
     inputs = resolve_inputs()
-    log.info("dependencies resolved: %s", list(inputs.keys()))
+    optional = resolve_optional_inputs()
+    log.info("dependencies resolved: %s (optional: %s)",
+             list(inputs.keys()), list(optional.keys()) or "none")
     ctrl = ExploreController(
         map_topic=inputs["map_topic"],
         nav_navigate_endpoint=inputs["nav_navigate"],
         nav_status_endpoint=inputs["nav_status"],
         nav_cancel_endpoint=inputs["nav_cancel"],
+        scene_objects_endpoint=optional.get("scene_objects"),
     )
     ctrl.start_runtime()
     log.info("CMD_ACTIVATE ok — controller running")

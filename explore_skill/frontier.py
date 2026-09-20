@@ -32,6 +32,22 @@ import numpy as np
 
 OCC_THRESH = 50  # ≥ this counts as obstacle (matches nav2 convention)
 
+# The chassis the goal has to fit. Kept equal to nav2's `robot_radius` in
+# examples/webots/config/nav2_params.yaml -- a clearance smaller than the
+# robot is not a safety check, and this one was 0.15.
+ROBOT_RADIUS_M = 0.22
+# Enough that a goal accepted here is not one nav2's inflation layer will
+# refuse the moment the robot arrives.
+SAFE_MARGIN_M = 0.06
+DEFAULT_CLEARANCE_M = ROBOT_RADIUS_M + SAFE_MARGIN_M
+
+# How far short of the frontier line to stop. A centroid sits on the
+# free/unknown boundary by construction, so driving to it means driving to
+# the edge of the known world every time; stopping a little back puts the
+# robot in space that has been observed, still close enough that the sensors
+# cover what lies beyond.
+DEFAULT_STANDOFF_M = 0.45
+
 
 @dataclass
 class GridView:
@@ -72,6 +88,16 @@ class FrontierCluster:
     centroid_xy: Tuple[float, float]   # world coords
     size: int                          # cell count
     cell_indices: np.ndarray           # (N, 2) int — for debugging / viz
+    # Where to actually drive. Held back from the centroid toward the robot
+    # so the goal is in observed space rather than on the boundary. Reports
+    # and overlays keep using centroid_xy: that is what was *found*, and the
+    # two being separate is the point.
+    goal_xy: Optional[Tuple[float, float]] = None
+
+    @property
+    def drive_to(self) -> Tuple[float, float]:
+        """The pose to navigate to — the standoff point where one exists."""
+        return self.goal_xy or self.centroid_xy
 
 
 def find_frontier_cells(gv: GridView) -> np.ndarray:
@@ -156,10 +182,13 @@ def cluster_frontiers(cells: np.ndarray, min_size: int = 3,
 
 
 def is_target_safe(gv: GridView, wx: float, wy: float,
-                    safe_radius_m: float = 0.15) -> bool:
+                    safe_radius_m: float = DEFAULT_CLEARANCE_M) -> bool:
     """Reject targets that sit inside or near an obstacle. Single
     check: every cell in a `safe_radius_m`-radius patch around the
-    target must be NON-OCCUPIED (g < OCC_THRESH). Unknown cells (-1)
+    target must be NON-OCCUPIED (g < OCC_THRESH). The radius defaults
+    to the chassis plus a margin — it was 0.15, below the 0.22
+    `robot_radius` nav2 runs with, so a goal could pass this test with
+    the robot's own body overlapping an obstacle. Unknown cells (-1)
     are allowed — frontier centroids sit on the free/unknown boundary
     by construction, so requiring "mostly known" at the exact centroid
     deadlocks exploration ("no safe frontier" forever even when 7+
@@ -180,11 +209,50 @@ def is_target_safe(gv: GridView, wx: float, wy: float,
     return bool(np.all(patch < OCC_THRESH))
 
 
+def standoff_point(robot_xy: Tuple[float, float],
+                    target_xy: Tuple[float, float],
+                    standoff_m: float) -> Tuple[float, float]:
+    """Pull `target_xy` back toward the robot by `standoff_m`.
+
+    Returns the target unchanged when the robot is already closer than the
+    standoff: there is nothing to hold back from, and retracting past the
+    robot would send it backwards away from the frontier it is meant to
+    observe.
+    """
+    dx, dy = target_xy[0] - robot_xy[0], target_xy[1] - robot_xy[1]
+    distance = (dx * dx + dy * dy) ** 0.5
+    if distance <= standoff_m or distance <= 1e-6:
+        return target_xy
+    scale = (distance - standoff_m) / distance
+    return (robot_xy[0] + dx * scale, robot_xy[1] + dy * scale)
+
+
+def in_keepout(x: float, y: float,
+                keepout: Optional[List[Tuple[float, float, float]]]) -> bool:
+    """Whether (x, y) falls inside any (cx, cy, radius) circle.
+
+    These come from whatever can see what the grid cannot. A lidar at
+    chassis height does not see a tabletop, so a table is free space in the
+    occupancy grid and the robot drives into it; the only way to avoid one
+    is for something with a different view to name it. This module takes
+    that as data and asks no questions about where it came from.
+    """
+    if not keepout:
+        return False
+    for cx, cy, radius in keepout:
+        if (x - cx) ** 2 + (y - cy) ** 2 <= radius * radius:
+            return True
+    return False
+
+
 def score_clusters(clusters: List[FrontierCluster], gv: GridView,
                     robot_xy: Tuple[float, float], *,
                     max_distance_m: float = 8.0,
                     visited_cells: Optional[set] = None,
-                    visited_penalty_m: float = 1.5
+                    visited_penalty_m: float = 1.5,
+                    clearance_m: float = DEFAULT_CLEARANCE_M,
+                    standoff_m: float = DEFAULT_STANDOFF_M,
+                    keepout: Optional[List[Tuple[float, float, float]]] = None
                     ) -> List[Tuple[float, FrontierCluster]]:
     """Score frontiers and rank descending. Score formula:
 
@@ -193,7 +261,14 @@ def score_clusters(clusters: List[FrontierCluster], gv: GridView,
     With these guards:
       - travel > max_distance_m → cluster dropped entirely (local
         preference: don't try to teleport across a multi-room map).
-      - centroid inside lethal halo → dropped (is_target_safe()).
+      - the standoff point, not the centroid, is what gets checked and
+        driven to: the centroid is on the free/unknown boundary by
+        construction, and stopping there is how the robot ends up with
+        its nose in whatever the boundary was hiding.
+      - standoff point inside lethal halo → dropped (is_target_safe()).
+      - standoff point inside a keep-out circle → dropped. Those name
+        obstacles the grid does not contain, a table under a
+        chassis-height lidar being the case this was written for.
       - centroid in/near a visited cell → travel penalty added so
         re-visiting unexplored fringes is preferred.
 
@@ -210,8 +285,13 @@ def score_clusters(clusters: List[FrontierCluster], gv: GridView,
         travel = ((wx - robot_xy[0]) ** 2 + (wy - robot_xy[1]) ** 2) ** 0.5
         if travel > max_distance_m:
             continue                             # too far — skip
-        if not is_target_safe(gv, wx, wy):
+        gx, gy = standoff_point(robot_xy, (wx, wy), standoff_m)
+        # Checked where the robot will stand, not where the frontier is.
+        if not is_target_safe(gv, gx, gy, safe_radius_m=clearance_m):
             continue                             # would crash — skip
+        if in_keepout(gx, gy, keepout):
+            continue                             # sensor-invisible obstacle
+        c_world.goal_xy = (gx, gy)
 
         penalty = 0.0
         if visited_cells:
@@ -234,7 +314,10 @@ def score_clusters(clusters: List[FrontierCluster], gv: GridView,
 def pick_target(gv: GridView, robot_xy: Tuple[float, float], *,
                  min_size: int = 3,
                  max_distance_m: float = 8.0,
-                 visited_cells: Optional[set] = None
+                 visited_cells: Optional[set] = None,
+                 clearance_m: float = DEFAULT_CLEARANCE_M,
+                 standoff_m: float = DEFAULT_STANDOFF_M,
+                 keepout: Optional[List[Tuple[float, float, float]]] = None
                  ) -> Optional[FrontierCluster]:
     """End-to-end convenience. Returns None if no SAFE frontier in
     range — caller may declare done."""
@@ -246,7 +329,10 @@ def pick_target(gv: GridView, robot_xy: Tuple[float, float], *,
         return None
     scored = score_clusters(clusters, gv, robot_xy,
                              max_distance_m=max_distance_m,
-                             visited_cells=visited_cells)
+                             visited_cells=visited_cells,
+                             clearance_m=clearance_m,
+                             standoff_m=standoff_m,
+                             keepout=keepout)
     return scored[0][1] if scored else None
 
 
