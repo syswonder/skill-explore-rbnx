@@ -132,7 +132,10 @@ class ExploreController:
             return
         self._ros = _import_ros()
         rclpy = self._ros["rclpy"]
-        rclpy.init(args=None)
+
+        # Context.init() must only be called once
+        if not rclpy.ok():
+            rclpy.init(args=None)
 
         node = self._ros["Node"]("explore_skill")
         self._node = node
