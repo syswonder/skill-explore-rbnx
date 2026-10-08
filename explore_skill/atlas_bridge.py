@@ -38,6 +38,18 @@ REQUIRED_INPUTS = {
 }
 
 
+# Channels to the inputs the controller uses while the skill is ACTIVE. They
+# stay open until CMD_DEACTIVATE: they are how Atlas knows explore depends on
+# map and navigation, so a fault there can be traced to explore.
+_input_channels: list = []
+
+
+def _close_inputs() -> None:
+    for ch in _input_channels:
+        ch.close()
+    _input_channels.clear()
+
+
 def resolve_inputs(deadline_s: float = 60.0) -> dict[str, str]:
     resolved: dict[str, str] = {}
     deadline = time.time() + deadline_s
@@ -53,13 +65,16 @@ def resolve_inputs(deadline_s: float = 60.0) -> dict[str, str]:
             except Exception:  # noqa: BLE001
                 continue
             ep = ch.endpoint
-            ch.close()
             if ep:
+                _input_channels.append(ch)
                 resolved[key] = ep
                 log.info("resolved %s [%s] → %s", cid, transport, ep)
+            else:
+                ch.close()
         if len(resolved) == len(REQUIRED_INPUTS):
             return resolved
         time.sleep(2.0)
+    _close_inputs()
     missing = [k for k in REQUIRED_INPUTS if k not in resolved]
     raise RuntimeError(
         f"explore skill cannot find dependencies on atlas: missing "
@@ -176,13 +191,18 @@ def activate():
         return Ok()
     inputs = resolve_inputs()
     log.info("dependencies resolved: %s", list(inputs.keys()))
-    ctrl = ExploreController(
-        map_topic=inputs["map_topic"],
-        nav_navigate_endpoint=inputs["nav_navigate"],
-        nav_status_endpoint=inputs["nav_status"],
-        nav_cancel_endpoint=inputs["nav_cancel"],
-    )
-    ctrl.start_runtime()
+    try:
+        ctrl = ExploreController(
+            map_topic=inputs["map_topic"],
+            nav_navigate_endpoint=inputs["nav_navigate"],
+            nav_status_endpoint=inputs["nav_status"],
+            nav_cancel_endpoint=inputs["nav_cancel"],
+        )
+        ctrl.start_runtime()
+    except Exception:
+        ctrl = None
+        _close_inputs()
+        raise
     log.info("CMD_ACTIVATE ok — controller running")
     return Ok()
 
@@ -199,6 +219,7 @@ def deactivate():
         ctrl.stop_runtime()
     finally:
         ctrl = None
+        _close_inputs()
     log.info("CMD_DEACTIVATE ok — controller stopped")
     return Ok()
 
