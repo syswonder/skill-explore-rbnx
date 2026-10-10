@@ -112,6 +112,8 @@ class FrontierCluster:
     # and overlays keep using centroid_xy: that is what was *found*, and the
     # two being separate is the point.
     goal_xy: Optional[Tuple[float, float]] = None
+    # Length of the way to goal_xy when the strategy searched for one.
+    path_m: Optional[float] = None
 
     @property
     def drive_to(self) -> Tuple[float, float]:

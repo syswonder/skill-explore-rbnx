@@ -14,6 +14,8 @@ the four legs, the top blocks the body.
 """
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Tuple
 
@@ -170,7 +172,34 @@ def warehouse() -> World:
     return b.build("warehouse", (2.0, 2.0, 0.0))
 
 
+def maze() -> World:
+    """1.6 m passages with dead ends, as in Explore-Bench's maze."""
+    b = _Builder(14.0, 10.0)
+    b.border()
+    b.vwall(2.0, 0.0, 8.0)
+    b.vwall(4.0, 2.0, 10.0)
+    b.vwall(6.0, 0.0, 6.0)
+    b.hwall(8.0, 6.0, 12.0)
+    b.vwall(8.0, 2.0, 8.0)
+    b.hwall(2.0, 8.0, 12.0)
+    b.vwall(10.0, 4.0, 8.0)
+    b.hwall(4.0, 10.0, 14.0)
+    b.vwall(12.0, 6.0, 10.0)
+    return b.build("maze", (1.0, 1.0, math.pi / 2))
+
+
+def loop() -> World:
+    """A corridor ring round a central block: the robot can go either way
+    and should not walk the ring twice."""
+    b = _Builder(16.0, 12.0)
+    b.border()
+    b.box(3.0, 3.0, 13.0, 9.0)
+    b.box(13.0, 5.5, 16.0, 5.6)                # side room off the east leg
+    b.box(14.0, 5.5, 15.0, 5.6, FREE)
+    return b.build("loop", (1.5, 1.5, 0.0))
+
+
 WORLDS: Dict[str, Callable[[], World]] = {
     "office": office, "corridor": corridor, "tables": tables, "glass": glass,
-    "house": house, "warehouse": warehouse,
+    "house": house, "warehouse": warehouse, "maze": maze, "loop": loop,
 }
