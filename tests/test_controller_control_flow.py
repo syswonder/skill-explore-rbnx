@@ -133,6 +133,24 @@ class ExploreControlFlowTest(unittest.TestCase):
         self.assertEqual(handle.state, "error")
         self.assertIn("all tried: 2 unreachable", handle.detail)
 
+    def test_a_run_that_reached_frontiers_is_done_despite_one_failure(self) -> None:
+        """One corner nav cannot reach does not turn a run that mapped
+        everything else into a failure."""
+        goals = []
+
+        def nav(x, y, *, yaw, timeout_s, cancel_evt):
+            goals.append((x, y))
+            if len(goals) == 1:
+                return False, "nav terminal: FAILED"
+            return True, "nav terminal: SUCCEEDED"
+
+        handle = self._run_with_nav(nav)
+
+        self.assertEqual(len(goals), 2)
+        self.assertEqual(handle.state, "done")
+        self.assertIn("1 unreachable, 1 still there after a visit",
+                      handle.detail)
+
     def test_consecutive_nav_failures_end_the_task(self) -> None:
         legs = []
 

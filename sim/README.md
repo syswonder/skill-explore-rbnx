@@ -9,6 +9,7 @@ takes seconds and needs neither ROS nor Webots.
 python3 -m sim                      # every world
 python3 -m sim --world office -v    # one world, with the controller's log
 python3 -m sim --scene              # give the controller Scene's table boxes
+python3 -m sim --strategy mrtsp     # the `strategy` config key; default nearest
 python3 -m sim --png out/           # one picture per run
 ```
 

@@ -49,6 +49,8 @@ class Result:
     trajectory: List[Tuple[float, float]] = field(default_factory=list)
     collision_points: List[Tuple[float, float]] = field(default_factory=list)
     grid: Optional[np.ndarray] = None  # the final map
+    # (simulated s since start, coverage, distance m), about once a second.
+    curve: List[Tuple[float, float, float]] = field(default_factory=list)
 
     def summary(self) -> str:
         return (f"{self.world:9s} {self.state:8s} t={self.sim_time_s:6.0f}s "
@@ -82,7 +84,8 @@ def reachable_free(world: World, robot: RobotParams) -> np.ndarray:
 
 
 def run(world: World, *, robot: Optional[RobotParams] = None,
-        timeout_s: float = 1800.0, scene: bool = False) -> Result:
+        timeout_s: float = 1800.0, scene: bool = False,
+        strategy: Optional[str] = None) -> Result:
     from explore_skill import controller as ctl
 
     robot = robot or RobotParams()
@@ -95,10 +98,27 @@ def run(world: World, *, robot: Optional[RobotParams] = None,
             nav_navigate_endpoint="sim://nav",
             nav_status_endpoint="sim://nav",
             nav_cancel_endpoint="sim://nav",
-            **({"scene_objects_endpoint": "sim://scene"} if scene else {}))
+            **({"scene_objects_endpoint": "sim://scene"} if scene else {}),
+            robot_radius_m=robot.inscribed_m,     # what Soma would give
+            **({"strategy": strategy} if strategy else {}))
         mapper = Mapper(world, robot)
+        target = reachable_free(world, robot)
+        n_target = max(1, int(target.sum()))
+        t0 = clock.time()
+        curve: List[Tuple[float, float, float]] = []
+
+        def sample():
+            t = clock.time() - t0
+            if curve and t - curve[-1][0] < 1.0:
+                return
+            known = (mapper.grid == FREE_V) & target
+            curve.append((t, float(known.sum()) / n_target,
+                          nav.distance_m if nav else 0.0))
+
+        nav = None
 
         def on_tick(x, y, yaw):
+            sample()
             # What the ROS spin thread does on /map and TF.
             with c._lock:
                 c._latest_map = mapper.msg()
@@ -124,7 +144,10 @@ def run(world: World, *, robot: Optional[RobotParams] = None,
     finally:
         ctl.time = saved_time
 
-    target = reachable_free(world, robot)
+    nav_ = nav
+    curve.append((clock.time() - t0,
+                  float(((mapper.grid == FREE_V) & target).sum()) / n_target,
+                  nav_.distance_m))
     known = (mapper.grid == FREE_V) & target
     failed = [g for g in nav.goals if "SUCCEEDED" not in g[2]]
     return Result(
@@ -136,4 +159,4 @@ def run(world: World, *, robot: Optional[RobotParams] = None,
         collisions=len(nav.collisions), recoveries=nav.recoveries,
         min_clearance_m=nav.min_clearance_m, goals=nav.goals,
         trajectory=nav.trajectory, collision_points=nav.collisions,
-        grid=mapper.grid)
+        grid=mapper.grid, curve=curve)
