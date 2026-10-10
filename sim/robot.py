@@ -37,3 +37,17 @@ class RobotParams:
     # is -7° from the top of the body, and Grid/RangeMin is 0.25.
     blind_radius_m: float = 0.5
     map_period_s: float = 1.0          # Rtabmap/DetectionRate
+    # Noise, off by default; `python3 -m sim --noise` turns on the values
+    # in NOISY. A scan is integrated at a pose off by scan_pose_sigma_m (SLAM
+    # jitter), each ray is lost with lidar_dropout, and each return moves
+    # along its ray by lidar_range_sigma_m.
+    scan_pose_sigma_m: float = 0.0
+    lidar_dropout: float = 0.0
+    lidar_range_sigma_m: float = 0.0
+
+
+# MID-360 range noise is about 2 cm; 3 cm of pose jitter is typical of
+# RTAB-Map between loop closures. Dropout stands in for dark or shiny
+# surfaces that return nothing.
+NOISY = dict(scan_pose_sigma_m=0.03, lidar_dropout=0.05,
+             lidar_range_sigma_m=0.02)

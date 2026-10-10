@@ -18,6 +18,10 @@ def main() -> None:
     ap.add_argument("--strategy", action="append",
                     help="explore strategy; repeat to compare several "
                          "(default: the controller's default)")
+    ap.add_argument("--noise", action="store_true",
+                    help="add lidar and SLAM pose noise (robot.NOISY)")
+    ap.add_argument("--seed", type=int, default=0,
+                    help="random seed for --noise")
     ap.add_argument("--timeout", type=float, default=1800.0,
                     help="task timeout in simulated seconds")
     ap.add_argument("--png", metavar="DIR", help="write one PNG per run here")
@@ -27,13 +31,15 @@ def main() -> None:
                         format="%(message)s")
 
     from .render import render
+    from .robot import NOISY, RobotParams
     from .run import run
 
     for strategy in args.strategy or [None]:
         for name in args.world or sorted(WORLDS):
             world = WORLDS[name]()
-            result = run(world, timeout_s=args.timeout, scene=args.scene,
-                         strategy=strategy)
+            robot = RobotParams(**NOISY) if args.noise else None
+            result = run(world, robot=robot, timeout_s=args.timeout,
+                         scene=args.scene, strategy=strategy, seed=args.seed)
             print(f"{strategy or 'default':16s}", result.summary())
             if args.png:
                 os.makedirs(args.png, exist_ok=True)

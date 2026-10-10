@@ -146,7 +146,7 @@ class ExploreControlFlowTest(unittest.TestCase):
 
         handle = self._run_with_nav(nav)
 
-        self.assertEqual(len(goals), 2)
+        self.assertEqual(len(goals), 3)       # fail, visit, close look
         self.assertEqual(handle.state, "done")
         self.assertIn("1 unreachable, 1 still there after a visit",
                       handle.detail)
@@ -181,7 +181,9 @@ class ExploreControlFlowTest(unittest.TestCase):
 
         handle = self._run_with_nav(nav)
 
-        self.assertEqual(len(goals), 2)
+        # Each frontier once, then once more from as close as the robot
+        # fits, in case the first goal could not see round a corner.
+        self.assertEqual(len(goals), 4)
         self.assertEqual(handle.state, "done")
         self.assertIn("2 still there after a visit", handle.detail)
 
@@ -214,7 +216,9 @@ class ExploreControlFlowTest(unittest.TestCase):
         self.assertTrue(sent)
         for x, y, yaw, (fx, fy) in sent:
             self.assertIsNotNone(yaw)
-            self.assertAlmostEqual(yaw, math.atan2(fy - y, fx - x), places=6)
+            if math.hypot(fx - x, fy - y) > 0.1:   # a close look sits on it
+                self.assertAlmostEqual(yaw, math.atan2(fy - y, fx - x),
+                                       places=6)
 
     def test_a_frontier_out_of_local_range_is_still_explored(self) -> None:
         """The 6 m local radius is a preference. With nothing nearer, the
@@ -237,9 +241,39 @@ class ExploreControlFlowTest(unittest.TestCase):
         self.controller._task = handle
         self.controller._run_task(handle)
 
-        self.assertEqual(len(goals), 1)
+        self.assertGreaterEqual(len(goals), 1)
         self.assertGreater(math.hypot(goals[0][0] - 1.0, goals[0][1] - 1.0),
                            self.controller.MAX_FRONTIER_DISTANCE_M)
+
+    def test_a_long_leg_gets_time_for_its_length(self) -> None:
+        """A fixed 60 s cut long legs short at the Lite3's 0.35 m/s, and
+        the frontier at the end was then blacklisted as unreachable."""
+        data = np.zeros((100, 100), dtype=np.int8)
+        data[85:95, 85:95] = -1
+        msg = _map_msg()
+        msg.data = data.tobytes()
+        legs = []
+
+        def nav(x, y, *, yaw, timeout_s, cancel_evt):
+            legs.append((x, y, timeout_s))
+            return True, "nav terminal: SUCCEEDED"
+
+        self.controller._latest_pose_xyyaw = (1.0, 1.0, 0.0)
+        self.controller._latest_map = msg
+        self.controller.LOOP_QUIET_PERIOD_S = 0.0
+        self.controller.NAV_GOAL_TIMEOUT_S = 10.0
+        self.controller._nav_navigate_blocking = nav
+        handle = self._handle()
+        handle.timeout_s = 3600.0
+        self.controller._task = handle
+        self.controller._run_task(handle)
+
+        x, y, timeout_s = legs[0]
+        # The path is searched from the robot's 0.1 m cell, so it can come
+        # out a little shorter than the straight line from the exact pose.
+        self.assertGreater(timeout_s, 0.95 *
+                           self.controller.LEG_TIMEOUT_PER_M_S *
+                           math.hypot(x - 1.0, y - 1.0))
 
     def test_a_hung_mcp_call_times_out(self) -> None:
         from explore_skill import controller as ctl

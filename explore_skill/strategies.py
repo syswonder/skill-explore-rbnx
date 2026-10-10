@@ -64,6 +64,8 @@ _GOAL_MIN_M, _GOAL_MAX_M = 0.9, 2.0
 _WEIGHT_DISTANCE = 1.0
 _SENSOR_EFFECTIVE_RANGE_M = 1.5
 _VMAX, _WMAX = 0.35, 0.6
+# frontier_greedy's standoff for a second, close look.
+_CLOSE_STANDOFF_M = 0.25
 # Goals closer than this to the robot do not move exploration on.
 _MIN_GOAL_DISTANCE_M = 0.8
 
@@ -154,11 +156,14 @@ class _Reach:
                 return False
         return True
 
-    def goal_near(self, target: Tuple[float, float], keepout
+    def goal_near(self, target: Tuple[float, float], keepout,
+                  close: bool = False
                   ) -> Optional[Tuple[Tuple[float, float], float]]:
         """A reachable cell 0.9-2.0 m from `target` that sees it: the one
         with the most room, then the shortest way from the robot, so the goal
         sits on the robot's side and the robot arrives facing the frontier.
+        With `close`, the reachable cell nearest the frontier instead, for
+        a second look at one the first visit could not clear.
         Returns (goal, path m)."""
         tx, ty = self.cell(*target)
         r = int(math.ceil(_GOAL_MAX_M / self.res))
@@ -166,12 +171,16 @@ class _Reach:
         x0, x1 = max(0, tx - r), min(self.w, tx + r + 1)
         yy, xx = np.mgrid[y0:y1, x0:x1]
         sep = np.hypot(xx - tx, yy - ty) * self.res
+        near_m = 0.0 if close else _GOAL_MIN_M
         ok = (np.isfinite(self.dist[y0:y1, x0:x1])
-              & (sep >= _GOAL_MIN_M) & (sep <= _GOAL_MAX_M))
+              & (sep >= near_m) & (sep <= _GOAL_MAX_M))
         if not ok.any():
             return None
         room = self.room_m[y0:y1, x0:x1][ok]
-        order = np.lexsort((self.dist[y0:y1, x0:x1][ok], -room))
+        if close:
+            order = np.argsort(sep[ok], kind="stable")
+        else:
+            order = np.lexsort((self.dist[y0:y1, x0:x1][ok], -room))
         cx, cy = xx[ok][order], yy[ok][order]
         for i in range(min(len(order), 40)):
             c = (int(cx[i]), int(cy[i]))
@@ -185,7 +194,7 @@ class _Reach:
 
 
 def _candidates(gv: GridView, robot_xy, *, min_size, robot_radius_m,
-                blocked_xy, blocked_radius_m, keepout):
+                blocked_xy, blocked_radius_m, keepout, close=False):
     """(cluster with its goal, path length to the goal, MRTSP terms)."""
     cells = find_frontier_cells(gv)
     if cells.size == 0:
@@ -197,7 +206,7 @@ def _candidates(gv: GridView, robot_xy, *, min_size, robot_radius_m,
         if blocked_xy and any(math.hypot(center[0] - bx, center[1] - by)
                               <= blocked_radius_m for bx, by in blocked_xy):
             continue
-        found = reach.goal_near(center, keepout)
+        found = reach.goal_near(center, keepout, close)
         if found is None:
             continue
         goal, goal_path_m = found
@@ -214,7 +223,7 @@ def _candidates(gv: GridView, robot_xy, *, min_size, robot_radius_m,
                                           center[1] - goal[1])
         out.append((FrontierCluster(centroid_xy=center, size=c.size,
                                     cell_indices=c.cell_indices,
-                                    goal_xy=goal),
+                                    goal_xy=goal, path_m=goal_path_m),
                     goal_path_m,
                     {"dm": dm, "centroid": centroid, "entry": entry}))
     return out
@@ -246,9 +255,13 @@ def pick(strategy: str, gv: GridView, robot_xy: Tuple[float, float], *,
          blocked_xy: Optional[Sequence[Tuple[float, float]]] = None,
          blocked_radius_m: float = 1.0,
          keepout: Optional[List[Tuple[float, float, float]]] = None,
+         close: bool = False,
          **frontier_kwargs) -> Optional[FrontierCluster]:
-    """The next frontier to visit under `strategy`, or None."""
+    """The next frontier to visit under `strategy`, or None. `close` asks
+    for a goal as near the frontier as the robot fits."""
     if strategy == "frontier_greedy":
+        if close:
+            frontier_kwargs["standoff_m"] = _CLOSE_STANDOFF_M
         return pick_target(gv, robot_xy, min_size=min_size,
                            max_distance_m=max_distance_m,
                            visited_cells=visited_cells, blocked_xy=blocked_xy,
@@ -257,11 +270,11 @@ def pick(strategy: str, gv: GridView, robot_xy: Tuple[float, float], *,
     cands = [c for c in _candidates(
         gv, robot_xy, min_size=min_size, robot_radius_m=robot_radius_m,
         blocked_xy=blocked_xy, blocked_radius_m=blocked_radius_m,
-        keepout=keepout) if c[1] <= max_distance_m]
+        keepout=keepout, close=close) if c[1] <= max_distance_m]
     far = [c for c in cands
            if math.hypot(c[0].goal_xy[0] - robot_xy[0],
                          c[0].goal_xy[1] - robot_xy[1]) >= _MIN_GOAL_DISTANCE_M]
-    pool = far or cands
+    pool = cands if close else (far or cands)
     if not pool:
         return None
     return min(pool, key=lambda c: _mrtsp_cost(c, robot_xy, robot_yaw))[0]

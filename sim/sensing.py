@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Optional
 
 import numpy as np
 
@@ -18,9 +19,11 @@ class Mapper:
     that hit nothing within range mark nothing, and nothing inside the
     blind radius is marked free."""
 
-    def __init__(self, world: World, robot: RobotParams):
+    def __init__(self, world: World, robot: RobotParams,
+                 rng: Optional[np.random.Generator] = None):
         self.world = world
         self.robot = robot
+        self.rng = rng or np.random.default_rng(0)
         self.grid = np.full(world.cells.shape, UNKNOWN, dtype=np.int8)
         self._seen = world.seen_by_lidar()
         angles = np.linspace(0, 2 * np.pi, robot.lidar_rays, endpoint=False)
@@ -34,6 +37,9 @@ class Mapper:
         scan saw as free, for the costmap's raytrace clearing."""
         w = self.world
         res = w.resolution
+        r = self.robot
+        if r.scan_pose_sigma_m > 0:
+            x, y = (x, y) + self.rng.normal(0.0, r.scan_pose_sigma_m, 2)
         px = x + self._cos * self._dists
         py = y + self._sin * self._dists
         cx = np.floor(px / res).astype(int)
@@ -44,11 +50,20 @@ class Mapper:
         hit = self._seen[cyc, cxc] & inside
         n = self._dists.size
         first = np.where(hit.any(axis=1), hit.argmax(axis=1), n)
+        if r.lidar_range_sigma_m > 0:
+            step = self._dists[1] - self._dists[0]
+            jitter = np.rint(self.rng.normal(
+                0.0, r.lidar_range_sigma_m / step, first.size)).astype(int)
+            first = np.where(first < n, np.clip(first + jitter, 0, n - 1), n)
+        lost = np.zeros(first.size, dtype=bool)
+        if r.lidar_dropout > 0:
+            lost = self.rng.random(first.size) < r.lidar_dropout
+            inside = inside & ~lost[:, None]
         idx = np.arange(n)[None, :]
         before = (idx < first[:, None]) & inside & (
             self._dists[None, :] >= self.robot.blind_radius_m)
         free_cy, free_cx = cyc[before], cxc[before]
-        has_hit = first < n
+        has_hit = (first < n) & ~lost
         rows = np.nonzero(has_hit)[0]
         hit_cy = cyc[rows, first[rows]]
         hit_cx = cxc[rows, first[rows]]

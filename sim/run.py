@@ -85,7 +85,7 @@ def reachable_free(world: World, robot: RobotParams) -> np.ndarray:
 
 def run(world: World, *, robot: Optional[RobotParams] = None,
         timeout_s: float = 1800.0, scene: bool = False,
-        strategy: Optional[str] = None) -> Result:
+        strategy: Optional[str] = None, seed: int = 0) -> Result:
     from explore_skill import controller as ctl
 
     robot = robot or RobotParams()
@@ -101,7 +101,7 @@ def run(world: World, *, robot: Optional[RobotParams] = None,
             **({"scene_objects_endpoint": "sim://scene"} if scene else {}),
             **({"strategy": strategy,
                 "robot_radius_m": robot.inscribed_m} if strategy else {}))
-        mapper = Mapper(world, robot)
+        mapper = Mapper(world, robot, np.random.default_rng(seed))
         target = reachable_free(world, robot)
         n_target = max(1, int(target.sum()))
         t0 = clock.time()
