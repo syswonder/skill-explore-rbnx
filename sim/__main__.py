@@ -15,6 +15,9 @@ def main() -> None:
                     help="world to run; repeat for several (default: all)")
     ap.add_argument("--scene", action="store_true",
                     help="give the controller Scene's table boxes as keep-outs")
+    ap.add_argument("--strategy", action="append",
+                    help="explore strategy; repeat to compare several "
+                         "(default: the controller's default)")
     ap.add_argument("--timeout", type=float, default=1800.0,
                     help="task timeout in simulated seconds")
     ap.add_argument("--png", metavar="DIR", help="write one PNG per run here")
@@ -26,14 +29,17 @@ def main() -> None:
     from .render import render
     from .run import run
 
-    for name in args.world or sorted(WORLDS):
-        world = WORLDS[name]()
-        result = run(world, timeout_s=args.timeout, scene=args.scene)
-        print(result.summary())
-        if args.png:
-            os.makedirs(args.png, exist_ok=True)
-            render(os.path.join(args.png, f"{name}.png"), world,
-                   result.grid, result)
+    for strategy in args.strategy or [None]:
+        for name in args.world or sorted(WORLDS):
+            world = WORLDS[name]()
+            result = run(world, timeout_s=args.timeout, scene=args.scene,
+                         strategy=strategy)
+            print(f"{strategy or 'default':16s}", result.summary())
+            if args.png:
+                os.makedirs(args.png, exist_ok=True)
+                stem = f"{name}-{strategy}" if strategy else name
+                render(os.path.join(args.png, f"{stem}.png"), world,
+                       result.grid, result)
 
 
 if __name__ == "__main__":

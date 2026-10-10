@@ -202,13 +202,22 @@ def cancel(req: CancelExplore_Request) -> CancelExplore_Response:
 # executor sends Driver(CMD_ACTIVATE) just-in-time on the first MCP
 # call, which is when the skill actually allocates hot resources (ROS
 # subs, frontier loop, …). See docs/cap-lifecycle.md for the full FSM.
+# Package config, read at CMD_INIT and used when the controller is built.
+_config: dict = {}
+
+
 @explore_skill.on_init
 def init(cfg):
     """CMD_INIT: light. The state machine wants every cap to reach
     INITIALIZED at boot time even if its upstream peers are still warming
-    up — so we deliberately don't query atlas for nav / map here. cfg is
-    accepted for forward-compat (no manifest knobs declared yet)."""
-    log.info("CMD_INIT ok")
+    up — so we deliberately don't query atlas for nav / map here. The
+    config is checked here, so a bad strategy name fails at boot rather
+    than on the first request."""
+    from explore_skill.strategies import DEFAULT_STRATEGY, validate
+    _config.clear()
+    _config.update(cfg or {})
+    strategy = validate(_config.get("strategy") or DEFAULT_STRATEGY)
+    log.info("CMD_INIT ok (strategy=%s)", strategy)
     return Ok()
 
 
@@ -233,6 +242,8 @@ def activate():
             nav_status_endpoint=inputs["nav_status"],
             nav_cancel_endpoint=inputs["nav_cancel"],
             scene_objects_endpoint=optional.get("scene_objects"),
+            strategy=_config.get("strategy"),
+            robot_radius_m=_config.get("robot_radius_m"),
         )
         ctrl.start_runtime()
     except Exception:

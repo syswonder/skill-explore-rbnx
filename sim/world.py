@@ -136,6 +136,41 @@ def glass() -> World:
     return b.build("glass", (1.5, 2.0, 0.0))
 
 
+def house() -> World:
+    """Eight rooms on two sides of a hall, some reached only through
+    another: greedy choices leave rooms behind and walk back for them."""
+    b = _Builder(20.0, 14.0)
+    b.border()
+    b.hwall(5.0, 0, 20)
+    b.hwall(9.0, 0, 20)
+    for x in (5.0, 10.0, 15.0):
+        b.vwall(x, 0.0, 5.0)
+        b.vwall(x, 9.0, 14.0)
+    for x0 in (2.0, 12.0, 17.0):                # doors from the hall, south
+        b.box(x0, 5.0, x0 + 0.9, 5.1, FREE)
+    b.box(7.0, 2.0, 7.1, 2.0, FREE)
+    b.box(10.0, 2.0, 10.1, 2.9, FREE)            # room 2 only through room 3
+    for x0 in (1.5, 6.5, 11.5, 16.5):           # doors from the hall, north
+        b.box(x0, 9.0, x0 + 0.9, 9.1, FREE)
+    b.table(2.5, 12.0)
+    b.table(12.5, 11.5, sx=0.8, sy=0.8)
+    b.table(7.5, 1.5)
+    b.box(18.0, 1.0, 19.5, 1.6)                  # sofa
+    return b.build("house", (1.0, 7.0, 0.0))
+
+
+def warehouse() -> World:
+    """Rows of shelving in a 30 x 20 m hall."""
+    b = _Builder(30.0, 20.0)
+    b.border()
+    for y in (4.0, 8.0, 12.0, 16.0):
+        b.box(4.0, y, 14.0, y + 0.8)
+        b.box(16.0, y, 26.0, y + 0.8)
+    b.box(14.8, 9.0, 15.2, 11.0)                  # pillar in the cross aisle
+    return b.build("warehouse", (2.0, 2.0, 0.0))
+
+
 WORLDS: Dict[str, Callable[[], World]] = {
     "office": office, "corridor": corridor, "tables": tables, "glass": glass,
+    "house": house, "warehouse": warehouse,
 }
