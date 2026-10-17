@@ -112,6 +112,21 @@ def fill_traversed(gv: GridView, cells) -> GridView:
                     width=gv.width, height=gv.height)
 
 
+def pad_unknown(gv: GridView, margin_m: float = 1.0) -> GridView:
+    """`gv` grown by `margin_m` of unknown on every side.
+
+    SLAM sizes the map to what it has seen, so free space can run to the
+    grid's edge: the corridor behind a robot whose lidar looks forward,
+    once the map is cropped. Past the edge is unknown, and with the margin
+    those cells are frontiers like any other."""
+    m = int(math.ceil(margin_m / gv.resolution))
+    data = np.pad(gv.data, m, constant_values=-1)
+    return GridView(data=data, resolution=gv.resolution,
+                    origin_x=gv.origin_x - m * gv.resolution,
+                    origin_y=gv.origin_y - m * gv.resolution,
+                    width=gv.width + 2 * m, height=gv.height + 2 * m)
+
+
 def _yaw(q) -> float:
     return math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                       1.0 - 2.0 * (q.y * q.y + q.z * q.z))

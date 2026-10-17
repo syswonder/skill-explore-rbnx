@@ -11,9 +11,10 @@ from explore_skill.controller import ExploreController, TaskHandle
 
 
 def _map_msg(pockets=((20, 60), (70, 60))):
-    """OccupancyGrid-like message: a free 10 m room at 0.1 m/cell with a
+    """OccupancyGrid-like message: a walled 10 m room at 0.1 m/cell with a
     1 m unknown pocket, one frontier cluster, at each (row, column)."""
     data = np.zeros((100, 100), dtype=np.int8)
+    data[0, :] = data[-1, :] = data[:, 0] = data[:, -1] = 100
     for y, x in pockets:
         data[y:y + 10, x:x + 10] = -1
     origin = SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0))

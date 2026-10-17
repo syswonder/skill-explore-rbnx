@@ -22,6 +22,19 @@ properties:
       beams leave, put in the visiting order of the minimum-ratio travelling
       salesman problem, and the first one is visited.
 
+  min_passage_m:
+    type: number
+    default: 0
+    minimum: 0
+    description: >-
+      Metres; 0 is off. Above zero, both strategies explore only the space
+      the robot reaches from where it starts through openings at least this
+      wide, judged on the map and navigation's costmap together. Frontiers
+      behind a narrower opening, or in one, are not candidates, so with a
+      value above the doors' width the robot keeps to the corridor and the
+      task ends when the corridor is explored. Set it above the widest door
+      to keep out of and below the narrowest corridor to explore.
+
   mrtsp:
     type: object
     description: >-
