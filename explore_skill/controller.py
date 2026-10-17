@@ -132,7 +132,8 @@ class ExploreController:
                  strategy: Optional[str] = None,
                  robot_radius_m: Optional[float] = None,
                  mrtsp: Optional[dict] = None,
-                 costmap_topic: Optional[str] = None):
+                 costmap_topic: Optional[str] = None,
+                 min_passage_m: float = 0.0):
         from .frontier import ROBOT_RADIUS_M
         from .strategies import DEFAULT_STRATEGY, validate
         self.map_topic = map_topic
@@ -141,6 +142,8 @@ class ExploreController:
         self.robot_radius_m = robot_radius_m or ROBOT_RADIUS_M
         # mrtsp's parameters (strategies.MRTSP_DEFAULTS).
         self.mrtsp = dict(mrtsp or {})
+        # Explore only through openings this wide (strategies.py); 0 is off.
+        self.min_passage_m = float(min_passage_m or 0.0)
         # Navigation's global costmap (robonix/service/navigation/costmap),
         # whose lethal cells goals keep away from (frontier.overlay_lethal).
         # None: the map alone.
@@ -148,6 +151,10 @@ class ExploreController:
         self._latest_costmap: Any = None
         self._costmap_received = 0.0
         self._costmap_notes: set = set()
+        # Whether the last _with_costmap took the costmap; logged on change
+        # when min_passage_m is on, since doorways are judged on both.
+        self._costmap_applied = False
+        self._gate_source: Optional[str] = None
         # All three nav endpoints typically point at the same FastMCP
         # server (http://host:port/mcp/) — atlas hands us the URL each
         # tool registered under. Keep separate fields so a future
@@ -260,6 +267,7 @@ class ExploreController:
         from .frontier import overlay_lethal
         with self._lock:
             cm, received = self._latest_costmap, self._costmap_received
+        self._costmap_applied = False
         if cm is None:
             return gv
         age = time.monotonic() - received
@@ -280,6 +288,7 @@ class ExploreController:
                 self._costmap_note("no transform %s <- %s (%s); costmap not "
                                    "used", dst, src, e)
                 return gv
+        self._costmap_applied = True
         return overlay_lethal(gv, cm, tf)
 
     def _costmap_note(self, fmt, *args) -> None:
@@ -496,6 +505,12 @@ class ExploreController:
 
         gv = fill_traversed(gv, visited | self._blind_cells(gv, pose))
         gv = self._with_costmap(gv, latest)
+        if self.min_passage_m > 0:
+            source = "map + costmap" if self._costmap_applied else "map only"
+            if source != self._gate_source:
+                self._gate_source = source
+                log.info("[%s] passages of %.2f m judged on %s",
+                         handle.task_id, self.min_passage_m, source)
         min_size = self.FRONTIER_MIN_SIZE_CELLS
         if self.strategy == "mrtsp":
             from .map_opt import optimize
@@ -504,7 +519,15 @@ class ExploreController:
             gv = optimize(gv)
             min_frontier_m = {**MRTSP_DEFAULTS, **self.mrtsp}["min_frontier_m"]
             min_size = max(min_size, int(round(min_frontier_m / gv.resolution)))
-        frontiers = total_frontier_count(gv, min_size=min_size)
+        if self.min_passage_m > 0 and pose is not None:
+            # Rooms off the corridor do not count, so the run ends when the
+            # corridor is done.
+            from .strategies import passage_frontier_count
+            frontiers = passage_frontier_count(
+                gv, pose, robot_radius_m=self.robot_radius_m,
+                min_passage_m=self.min_passage_m, min_size=min_size)
+        else:
+            frontiers = total_frontier_count(gv, min_size=min_size)
         if self.strategy == "mrtsp":
             log.info("[%s] frontiers raw=%d optimized=%d",
                      handle.task_id, raw, frontiers)
@@ -549,7 +572,8 @@ class ExploreController:
             args.update(overrides)
             return pick(strategy or self.strategy, view.grid, view.pose,
                         robot_yaw=view.yaw, robot_radius_m=self.robot_radius_m,
-                        mrtsp=self.mrtsp, **args)
+                        mrtsp=self.mrtsp, min_passage_m=self.min_passage_m,
+                        **args)
 
         target = goal(max_distance_m=self.MAX_FRONTIER_DISTANCE_M)
         if target is None:

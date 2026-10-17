@@ -266,6 +266,7 @@ def activate():
             strategy=_config.get("strategy"),
             mrtsp=_config.get("mrtsp"),
             costmap_topic=optional.get("costmap"),
+            min_passage_m=_config.get("min_passage_m") or 0.0,
             robot_radius_m=robot_radius_from_soma(
                 optional.get("soma_footprint")),
         )

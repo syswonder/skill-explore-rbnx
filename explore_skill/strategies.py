@@ -14,6 +14,13 @@ a frontier behind a wall is as far as the way round and one with no way to
 it is dropped. Its goal is our choice, not the paper's: a reachable cell
 0.9-2.0 m from the frontier that sees it, with the most room, then the
 shortest way from the robot.
+
+`min_passage_m` keeps either strategy to space the robot reaches through
+openings at least that wide (a corridor, not the rooms off it): the path
+search keeps that half-width from obstacles, and a frontier cell counts
+only next to a cell the search reached and outside any opening narrower
+than that. Cells seen through a doorway are not reached, so a room's
+frontier is dropped however large it is.
 """
 from __future__ import annotations
 
@@ -26,7 +33,7 @@ import numpy as np
 from .frontier import (DEFAULT_PREFERRED_CLEARANCE_M, OCC_THRESH,
                        FrontierCluster, GridView, anchor_cell,
                        cluster_frontiers, find_frontier_cells, in_keepout,
-                       pick_target)
+                       pick_target, score_clusters)
 
 STRATEGIES = ("frontier_greedy", "mrtsp")
 DEFAULT_STRATEGY = "frontier_greedy"
@@ -66,7 +73,8 @@ class _Reach:
 
     def __init__(self, gv: GridView, robot_xy: Tuple[float, float],
                  robot_radius_m: float, keepout=None,
-                 room_margin_m: float = GOAL_ROOM_MARGIN_M):
+                 room_margin_m: float = GOAL_ROOM_MARGIN_M,
+                 min_passage_m: float = 0.0):
         f = _COARSE
         h, w = gv.height // f, gv.width // f
         d = gv.data[:h * f, :w * f].reshape(h, f, w, f)
@@ -75,7 +83,9 @@ class _Reach:
         self.res = gv.resolution * f
         self.gv, self.h, self.w = gv, h, w
         self.occ = occ
-        r = max(1, int(math.ceil(robot_radius_m / self.res)))
+        # With min_passage_m, a gap narrower than that is shut as well.
+        clear_m = max(robot_radius_m, min_passage_m / 2)
+        r = max(1, int(math.ceil(clear_m / self.res)))
         self.blocked = _dilate(occ, r) | unknown
         # Scene keep-outs (tables the lidar sees through) block the search
         # too, except a circle the robot already stands in.
@@ -86,12 +96,21 @@ class _Reach:
             wx = gv.origin_x + (xs + 0.5) * self.res
             wy = gv.origin_y + (ys + 0.5) * self.res
             self.blocked |= (wx - kx) ** 2 + (wy - ky) ** 2 <= kr * kr
+        # A doorway whose far jamb is not mapped yet has unknown for a side,
+        # so the gate keeps the same distance from unknown too, specks
+        # (sparse beams) aside. Frontier cells sit next to unknown; they
+        # count when the search got within that distance of them.
+        gate = None
+        if min_passage_m > 0:
+            solid = ~_dilate(~unknown, 1)
+            gate = self.blocked | _dilate(solid, r + 1)
         # The robot stands where it is: the inflation of a wall within its
         # radius must not wall in the search's start, or near a wall every
         # frontier reads as out of reach.
         sx, sy = self.cell(*robot_xy)
         ys, xs = np.ogrid[:h, :w]
-        self.blocked &= ~(((xs - sx) ** 2 + (ys - sy) ** 2 <= r * r) & ~occ & ~unknown)
+        stand = ((xs - sx) ** 2 + (ys - sy) ** 2 <= r * r) & ~occ & ~unknown
+        self.blocked &= ~stand
         # Room around each cell, up to the preferred clearance.
         cap = int(math.ceil(DEFAULT_PREFERRED_CLEARANCE_M / self.res))
         room = np.full(occ.shape, float(cap))
@@ -103,7 +122,18 @@ class _Reach:
             grown = nxt
         self.room_m = room * self.res
         self.min_room_m = robot_radius_m + room_margin_m
-        self.dist = self._search(self.cell(*robot_xy))
+        start = self.cell(*robot_xy)
+        self.dist = self._search(start)
+        self._near = None
+        if gate is not None:
+            # A frontier cell counts next to a cell reached with walls kept
+            # at the gate's distance, and within that distance of one
+            # reached with unknown kept there as well. Goals and paths
+            # take the second, stricter search.
+            self._near = np.isfinite(self.dist)
+            self.blocked = gate & ~stand
+            self.dist = self._search(start)
+            self._cover = _dilate(np.isfinite(self.dist), r + 1)
 
     def cell(self, x: float, y: float) -> Tuple[int, int]:
         gv = self.gv
@@ -134,6 +164,17 @@ class _Reach:
                         dist[ny, nx] = nd
                         heapq.heappush(pq, (nd, (nx, ny)))
         return dist * self.res
+
+    def reached(self, cells: np.ndarray) -> np.ndarray:
+        """Which map cells (cx, cy) the gated search got to (see __init__)."""
+        near = self._near.copy()
+        near[1:, :] |= self._near[:-1, :]
+        near[:-1, :] |= self._near[1:, :]
+        near[:, 1:] |= near[:, :-1].copy()
+        near[:, :-1] |= near[:, 1:].copy()
+        x = np.minimum(cells[:, 0] // _COARSE, self.w - 1)
+        y = np.minimum(cells[:, 1] // _COARSE, self.h - 1)
+        return near[y, x] & self._cover[y, x]
 
     def path_m(self, xy: Tuple[float, float]) -> float:
         """Path length to `xy`, or to the nearest cell around it the robot
@@ -190,14 +231,66 @@ class _Reach:
         return None
 
 
+# Directions across which an opening's width is measured.
+_ACROSS = ((1, 0), (0, 1), (1, 1), (1, -1))
+
+
+def _in_opening(gv: GridView, cells: np.ndarray, width_m: float) -> np.ndarray:
+    """Which cells (cx, cy) lie in a gap narrower than `width_m`: obstacles
+    on both sides, along one of four directions, closer together than that.
+    A doorway is one; so is the inner corner of two walls."""
+    occ = gv.data >= OCC_THRESH
+    out = np.zeros(len(cells), dtype=bool)
+    for dx, dy in _ACROSS:
+        step = gv.resolution * math.hypot(dx, dy)
+        n = int(math.ceil(width_m / step))
+        gap = np.zeros(len(cells))
+        for sign in (1, -1):
+            first = np.full(len(cells), n)
+            for k in range(n, 0, -1):
+                x = cells[:, 0] + sign * k * dx
+                y = cells[:, 1] + sign * k * dy
+                ok = (x >= 0) & (x < gv.width) & (y >= 0) & (y < gv.height)
+                hit = np.zeros(len(cells), dtype=bool)
+                hit[ok] = occ[y[ok], x[ok]]
+                first[hit] = k
+            gap += first
+        out |= (gap - 1) * step < width_m
+    return out
+
+
+def passage_frontier_cells(gv: GridView, reach: "_Reach",
+                           min_passage_m: float) -> np.ndarray:
+    """Frontier cells, and with `min_passage_m` only those next to space
+    `reach` got to through openings that wide and outside any narrower
+    opening. Filtered before clustering: a frontier running from the
+    corridor through a doorway into a room keeps its corridor part only."""
+    cells = find_frontier_cells(gv)
+    if min_passage_m <= 0 or cells.size == 0:
+        return cells
+    keep = reach.reached(cells) & ~_in_opening(gv, cells, min_passage_m)
+    return cells[keep]
+
+
+def passage_frontier_count(gv: GridView, robot_xy, *, robot_radius_m: float,
+                           min_passage_m: float, min_size: int) -> int:
+    """How many frontier clusters `passage_frontier_cells` leaves."""
+    reach = _Reach(gv, robot_xy, robot_radius_m, min_passage_m=min_passage_m)
+    cells = passage_frontier_cells(gv, reach, min_passage_m)
+    return len(cluster_frontiers(cells, min_size=min_size)) if cells.size else 0
+
+
 def _candidates(gv: GridView, robot_xy, *, min_size, robot_radius_m,
                 blocked_xy, blocked_radius_m, keepout, close=False,
-                room_margin_m=GOAL_ROOM_MARGIN_M):
+                room_margin_m=GOAL_ROOM_MARGIN_M, min_passage_m=0.0):
     """(cluster with its goal, path length to the goal, MRTSP terms)."""
-    cells = find_frontier_cells(gv)
+    if find_frontier_cells(gv).size == 0:
+        return []
+    reach = _Reach(gv, robot_xy, robot_radius_m, keepout, room_margin_m,
+                   min_passage_m)
+    cells = passage_frontier_cells(gv, reach, min_passage_m)
     if cells.size == 0:
         return []
-    reach = _Reach(gv, robot_xy, robot_radius_m, keepout, room_margin_m)
     out = []
     for c in cluster_frontiers(cells, min_size=min_size):
         center = gv.cell_to_world(*anchor_cell(c))
@@ -331,21 +424,41 @@ def pick(strategy: str, gv: GridView, robot_xy: Tuple[float, float], *,
          close: bool = False,
          mrtsp: Optional[dict] = None,
          room_margin_m: float = GOAL_ROOM_MARGIN_M,
+         min_passage_m: float = 0.0,
          **frontier_kwargs) -> Optional[FrontierCluster]:
     """The next frontier to visit under `strategy`, or None. `close` asks
-    for a goal as near the frontier as the robot fits."""
+    for a goal as near the frontier as the robot fits. `min_passage_m`
+    keeps frontiers and goals to space reached through openings that wide."""
     if strategy == "frontier_greedy":
         if close:
             frontier_kwargs["standoff_m"] = _CLOSE_STANDOFF_M
-        return pick_target(gv, robot_xy, min_size=min_size,
-                           max_distance_m=max_distance_m,
-                           visited_cells=visited_cells, blocked_xy=blocked_xy,
-                           blocked_radius_m=blocked_radius_m, keepout=keepout,
-                           **frontier_kwargs)
+        if min_passage_m <= 0:
+            return pick_target(gv, robot_xy, min_size=min_size,
+                               max_distance_m=max_distance_m,
+                               visited_cells=visited_cells,
+                               blocked_xy=blocked_xy,
+                               blocked_radius_m=blocked_radius_m,
+                               keepout=keepout, **frontier_kwargs)
+        reach = _Reach(gv, robot_xy, robot_radius_m, keepout,
+                       min_passage_m=min_passage_m)
+        cells = passage_frontier_cells(gv, reach, min_passage_m)
+        if cells.size == 0:
+            return None
+        scored = score_clusters(
+            cluster_frontiers(cells, min_size=min_size), gv, robot_xy,
+            max_distance_m=max_distance_m, visited_cells=visited_cells,
+            blocked_xy=blocked_xy, blocked_radius_m=blocked_radius_m,
+            keepout=keepout, **frontier_kwargs)
+        # The goal on the line to the frontier must be in reached space too.
+        for _, c in scored:
+            if reach.reached(np.array([gv.world_to_cell(*c.goal_xy)]))[0]:
+                return c
+        return None
     cands = [c for c in _candidates(
         gv, robot_xy, min_size=min_size, robot_radius_m=robot_radius_m,
         blocked_xy=blocked_xy, blocked_radius_m=blocked_radius_m,
-        keepout=keepout, close=close, room_margin_m=room_margin_m)
+        keepout=keepout, close=close, room_margin_m=room_margin_m,
+        min_passage_m=min_passage_m)
         if c[1] <= max_distance_m]
     far = [c for c in cands
            if math.hypot(c[0].goal_xy[0] - robot_xy[0],
@@ -382,6 +495,10 @@ def config_problem(cfg: dict):
         if value < 0 or (value == 0 and key in _MRTSP_POSITIVE):
             bound = "greater than 0" if key in _MRTSP_POSITIVE else "at least 0"
             return f"mrtsp.{key} must be {bound}, not {value}"
+    passage = cfg.get("min_passage_m", 0)
+    if isinstance(passage, bool) or not isinstance(passage, (int, float)) \
+            or passage < 0:
+        return f"min_passage_m must be a number at least 0, not {passage!r}"
     return None
 
 
