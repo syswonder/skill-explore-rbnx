@@ -21,6 +21,7 @@ log = logging.getLogger("explore_rbnx")
 
 explore_skill = Skill(id="explore", namespace="robonix/skill/explore")
 ctrl: ExploreController | None = None
+_reference_config = None
 
 # Atlas-resolved inputs the skill consumes. Hard-fail if any required
 # input isn't atlas-resolvable: the packaging-spec rule is "no hardcoded
@@ -104,8 +105,8 @@ def _close_inputs() -> None:
 
 def resolve_inputs(deadline_s: float = 60.0) -> dict[str, str]:
     resolved: dict[str, str] = {}
-    deadline = time.time() + deadline_s
-    while time.time() < deadline:
+    deadline = time.monotonic() + deadline_s
+    while time.monotonic() < deadline:
         for key, (cid, transport) in REQUIRED_INPUTS.items():
             if key in resolved:
                 continue
@@ -233,6 +234,8 @@ def init(cfg):
     config is checked here, so a bad value fails at boot rather than on
     the first request."""
     from explore_skill.strategies import DEFAULT_STRATEGY, config_problem
+    global _reference_config
+    _reference_config = cfg.get("reference")
     _config.clear()
     _config.update(cfg or {})
     problem = config_problem(_config)
@@ -249,33 +252,42 @@ def activate():
     by which point map / nav should be ACTIVE), then build the
     ExploreController and start the rclpy thread. Idempotent on re-entry."""
     global ctrl
-    if ctrl is not None:
-        log.info("CMD_ACTIVATE — already runnable, no-op")
-        return Ok()
-    inputs = resolve_inputs()
-    optional = resolve_optional_inputs()
-    log.info("dependencies resolved: %s (optional: %s)",
-             list(inputs.keys()), list(optional.keys()) or "none")
     try:
-        ctrl = ExploreController(
-            map_topic=inputs["map_topic"],
-            nav_navigate_endpoint=inputs["nav_navigate"],
-            nav_status_endpoint=inputs["nav_status"],
-            nav_cancel_endpoint=inputs["nav_cancel"],
-            scene_objects_endpoint=optional.get("scene_objects"),
-            strategy=_config.get("strategy"),
-            mrtsp=_config.get("mrtsp"),
-            costmap_topic=optional.get("costmap"),
-            robot_radius_m=robot_radius_from_soma(
-                optional.get("soma_footprint")),
-        )
-        ctrl.start_runtime()
+        if ctrl is None:
+            inputs = resolve_inputs()
+            optional = resolve_optional_inputs()
+            log.info("dependencies resolved: %s (optional: %s)",
+                     list(inputs.keys()), list(optional.keys()) or "none")
+            ctrl = ExploreController(
+                map_topic=inputs["map_topic"],
+                nav_navigate_endpoint=inputs["nav_navigate"],
+                nav_status_endpoint=inputs["nav_status"],
+                nav_cancel_endpoint=inputs["nav_cancel"],
+                reference=_reference_config,
+                scene_objects_endpoint=optional.get("scene_objects"),
+                strategy=_config.get("strategy"),
+                mrtsp=_config.get("mrtsp"),
+                costmap_topic=optional.get("costmap"),
+                robot_radius_m=robot_radius_from_soma(
+                    optional.get("soma_footprint")),
+            )
+        if not ctrl.start_runtime():
+            return Deferred("waiting for Chronos reference time")
     except Exception:
-        ctrl = None
-        _close_inputs()
+        try:
+            if ctrl is not None:
+                ctrl.stop_runtime()
+        finally:
+            ctrl = None
+            _close_inputs()
         raise
     log.info("CMD_ACTIVATE ok — controller running")
     return Ok()
+
+
+@explore_skill.on_shutdown
+def shutdown():
+    return deactivate()
 
 
 @explore_skill.on_deactivate

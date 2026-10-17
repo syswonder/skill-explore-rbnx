@@ -20,9 +20,7 @@ Threading:
 
 Nav integration:
   The skill calls service/navigation/navigate and its status/cancel controls as
-  gRPC RPCs against the endpoints atlas resolved at startup. We do
-  NOT subscribe to /goal_pose or /cmd_vel — that would skip the nav
-  service's contract surface and break the abstraction.
+  MCP tools against the endpoints Atlas resolved at activation.
 """
 from __future__ import annotations
 
@@ -33,6 +31,8 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, List, Optional, Tuple
+
+from robonix_api._reference_time import _ReferenceClock
 
 log = logging.getLogger("explore_rbnx.controller")
 
@@ -48,7 +48,7 @@ class TaskHandle:
     last_target_xy: Optional[Tuple[float, float]] = None
     initial_area_m2: float = 0.0
     last_area_m2: float = 0.0
-    last_progress_t: float = field(default_factory=time.time)
+    last_progress_t: float = 0.0
     area_at_last_progress_m2: float = 0.0
     cancel_requested: bool = False
     legs_completed: int = 0           # successful nav legs in this task
@@ -61,6 +61,9 @@ class TaskHandle:
     consecutive_nav_failures: int = 0
     empty_sweeps: int = 0             # sweeps in a row that found no target
     thread: Optional[threading.Thread] = None
+    reference: tuple | None = None
+    elapsed_s: float = 0.0
+    nav_run_id: str = ""
 
 
 @dataclass
@@ -132,7 +135,7 @@ class ExploreController:
                  strategy: Optional[str] = None,
                  robot_radius_m: Optional[float] = None,
                  mrtsp: Optional[dict] = None,
-                 costmap_topic: Optional[str] = None):
+                 costmap_topic: Optional[str] = None, reference=None):
         from .frontier import ROBOT_RADIUS_M
         from .strategies import DEFAULT_STRATEGY, validate
         self.map_topic = map_topic
@@ -147,6 +150,7 @@ class ExploreController:
         self.costmap_topic = costmap_topic or None
         self._latest_costmap: Any = None
         self._costmap_received = 0.0
+        self._costmap_reference = None
         self._costmap_notes: set = set()
         # All three nav endpoints typically point at the same FastMCP
         # server (http://host:port/mcp/) — atlas hands us the URL each
@@ -163,7 +167,8 @@ class ExploreController:
         # extra keep-outs exactly as it did before.
         self._scene_endpoint = scene_objects_endpoint
         self._keepout_cache: List[Tuple[float, float, float]] = []
-        self._keepout_stamp = 0.0
+        self._keepout_stamp = None
+        self._keepout_reference = None
         self._lock = threading.Lock()
         self._latest_map: Any = None     # latest OccupancyGrid msg
         self._latest_pose_xyyaw: Optional[Tuple[float, float, float]] = None
@@ -178,15 +183,23 @@ class ExploreController:
         self._node = None
         self._spin_thread: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
+        self._reference = _ReferenceClock(reference, "explore/reference")
+        self._map_reference = None
+        self._pose_reference = None
+        self._spin_at = time.monotonic()
+        self._runtime_reference = None
 
         self._tf_buffer = None
         self._tf_listener = None
 
     # ── ROS runtime ─────────────────────────────────────────────────
-    def start_runtime(self) -> None:
+    def start_runtime(self) -> bool:
         """Spin up rclpy node + /map subscriber + tf2 listener."""
         if self._ros is not None:
-            return
+            return True
+        # A latched map may arrive only once; do not discard it before Chronos is ready.
+        if self._reference.read() is None:
+            return False
         self._ros = _import_ros()
         rclpy = self._ros["rclpy"]
 
@@ -194,7 +207,9 @@ class ExploreController:
         if not rclpy.ok():
             rclpy.init(args=None)
 
-        node = self._ros["Node"]("explore_skill")
+        from rclpy.parameter import Parameter
+        node = self._ros["Node"]("explore_skill", parameter_overrides=[
+            Parameter("use_sim_time", Parameter.Type.BOOL, self._reference.kind == "ros_time")])
         self._node = node
 
         QoS = self._ros["QoSProfile"]
@@ -214,7 +229,7 @@ class ExploreController:
 
         # tf2 for map→base_link lookup (so we know where the robot is)
         from tf2_ros import Buffer, TransformListener
-        self._tf_buffer = Buffer()
+        self._tf_buffer = Buffer(node=node)
         self._tf_listener = TransformListener(self._tf_buffer, node)
 
         self._stop_evt.clear()
@@ -222,32 +237,63 @@ class ExploreController:
                                               daemon=True)
         self._spin_thread.start()
         log.info("rclpy spinning; subscribed to map_topic=%s", self.map_topic)
+        return True
 
     def stop_runtime(self) -> None:
-        if self._task and self._task.state == "exploring":
-            self.cancel(None)
-        self._stop_evt.set()
-        if self._spin_thread:
-            self._spin_thread.join(timeout=3.0)
-        if self._ros:
-            try:
-                self._ros["rclpy"].shutdown()
-            except Exception:
-                pass
+        try:
+            if self._task and self._task.state == "exploring":
+                self.cancel(None)
+            self._stop_evt.set()
+            if self._task and self._task.thread and self._task.thread.ident is not None:
+                self._task.thread.join(timeout=20)
+                if self._task.thread.is_alive():
+                    raise RuntimeError("exploration task did not stop")
+            if self._spin_thread and self._spin_thread.ident is not None:
+                self._spin_thread.join(timeout=3.0)
+                if self._spin_thread.is_alive():
+                    raise RuntimeError("exploration ROS worker did not stop")
+            if self._node is not None:
+                self._node.destroy_node()
+            if self._ros:
+                try:
+                    self._ros["rclpy"].shutdown()
+                except Exception:
+                    pass
+        finally:
+            self._reference.close()
 
     def _spin_loop(self) -> None:
         rclpy = self._ros["rclpy"]
         while not self._stop_evt.is_set():
             try:
                 rclpy.spin_once(self._node, timeout_sec=0.2)
+                reading = self._reference.read()
+                identity = reading[1:] if reading is not None else None
+                if self._runtime_reference is not None and identity != self._runtime_reference:
+                    with self._lock:
+                        self._latest_map = self._latest_pose_xyyaw = None
+                        self._map_reference = self._pose_reference = None
+                        self._visited_xy.clear()
+                        self._latest_costmap = None
+                        self._costmap_reference = None
+                        self._keepout_cache = []
+                        self._keepout_stamp = None
+                        self._keepout_reference = None
+                        self._tf_buffer.clear()
+                self._runtime_reference = identity
                 self._refresh_robot_pose()
+                self._spin_at = time.monotonic()
             except Exception as e:  # noqa: BLE001
                 log.exception("spin error: %s", e)
                 time.sleep(0.1)
 
     def _on_map(self, msg) -> None:
+        reading = self._reference.read()
+        if reading is None:
+            return
         with self._lock:
             self._latest_map = msg
+            self._map_reference = reading
 
     # A costmap received longer ago than this is not used: navigation
     # publishes the whole grid about once a second, so an older one means it
@@ -262,7 +308,10 @@ class ExploreController:
             cm, received = self._latest_costmap, self._costmap_received
         if cm is None:
             return gv
-        age = time.monotonic() - received
+        reading = self._reference.read()
+        if reading is None or self._costmap_reference is None or reading[1:] != self._costmap_reference[1:]:
+            return gv
+        age = reading[0] / 1e9 - received
         if age > self.COSTMAP_MAX_AGE_S:
             self._costmap_note("costmap received %.1f s ago; not used", age)
             return gv
@@ -290,18 +339,24 @@ class ExploreController:
             log.warning(fmt, *args)
 
     def _on_costmap(self, msg) -> None:
+        reading = self._reference.read()
+        if reading is None:
+            return
         with self._lock:
-            self._latest_costmap, self._costmap_received = msg, time.monotonic()
+            self._latest_costmap, self._costmap_received = msg, reading[0] / 1e9
+            self._costmap_reference = reading
 
     def _refresh_robot_pose(self) -> None:
         """Look up map→base_link; record (x,y,yaw) and where it has been."""
         if self._tf_buffer is None:
             return
+        initial = self._reference.read()
+        if initial is None:
+            return
         try:
             from rclpy.time import Time
-            tr = self._tf_buffer.lookup_transform(
-                "map", "base_link", Time(),
-                timeout=self._ros["Duration"](seconds=0.5))
+            # This thread delivers TF callbacks too; retry on the next spin.
+            tr = self._tf_buffer.lookup_transform("map", "base_link", Time())
         except Exception:
             return
         x = float(tr.transform.translation.x)
@@ -310,8 +365,12 @@ class ExploreController:
         q = tr.transform.rotation
         yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        reading = self._reference.read()
+        if reading is None or reading[1:] != initial[1:]:
+            return
         with self._lock:
             self._latest_pose_xyyaw = (x, y, yaw)
+            self._pose_reference = reading
             step = self.VISITED_STEP_M
             self._visited_xy.add((round(x / step), round(y / step)))
 
@@ -339,6 +398,7 @@ class ExploreController:
 
     def start(self, *, area_hint: str, timeout_s: float,
               max_speed_m_s: float) -> TaskHandle:
+        reading = self._read_reference()
         with self._lock:
             if self._task is not None and self._task.state == "exploring":
                 raise RuntimeError(
@@ -350,7 +410,9 @@ class ExploreController:
             self._visited_xy = set()
             handle = TaskHandle(
                 task_id="exp-" + uuid.uuid4().hex[:8],
-                started_at=time.time(),
+                started_at=reading[0] / 1e9,
+                last_progress_t=reading[0] / 1e9,
+                reference=reading,
                 timeout_s=float(timeout_s),
                 max_speed_m_s=float(max_speed_m_s),
                 detail=f"started (area_hint={area_hint!r})",
@@ -373,13 +435,6 @@ class ExploreController:
                 return True, f"task already in terminal state {t.state} (no-op)"
             t.cancel_requested = True
             t.detail = "cancel requested"
-        # Best-effort: also tell nav to drop its current goal so the
-        # robot stops moving immediately rather than after the leg
-        # finishes.
-        try:
-            self._nav_cancel_rpc(run_id="")
-        except Exception as e:  # noqa: BLE001
-            log.warning("nav cancel rpc failed: %s", e)
         return True, f"cancel requested for {t.task_id}"
 
     def status(self, task_id: Optional[str]) -> Optional[dict]:
@@ -389,12 +444,11 @@ class ExploreController:
                 return None
             if task_id and t.task_id != task_id:
                 return None
-            elapsed = time.time() - t.started_at
             return {
                 "state": t.state,
                 "area_m2": float(t.last_area_m2),
                 "frontiers_left": _frontiers_left_count(self._latest_map),
-                "elapsed_s": float(elapsed),
+                "elapsed_s": t.elapsed_s,
                 "eta_s": -1.0,    # we don't currently estimate
                 "detail": t.detail,
                 "task_id": t.task_id,
@@ -410,10 +464,36 @@ class ExploreController:
         except Exception as e:  # noqa: BLE001
             log.exception("[%s] exploration failed", handle.task_id)
             try:
-                self._nav_cancel_rpc()
-            except Exception:  # noqa: BLE001 — navigation may be what failed
-                pass
-            self._terminate(handle, "error", f"{type(e).__name__}: {e}")
+                if handle.nav_run_id:
+                    self._nav_cancel_rpc(handle.nav_run_id)
+            except Exception as cancel_error:
+                self._terminate(handle, "error", f"{e}; {cancel_error}")
+                return
+            self._terminate(handle, "canceled" if handle.cancel_requested else "error",
+                            f"{type(e).__name__}: {e}")
+
+    def _read_reference(self, handle=None):
+        reading = self._reference.read()
+        if reading is None:
+            raise RuntimeError("Chronos reference unavailable")
+        if handle is not None:
+            if (reading[1:] != handle.reference[1:]
+                    or reading[0] < handle.reference[0]):
+                raise RuntimeError("Chronos reference interrupted during exploration")
+            if self._stop_evt.is_set() or handle.cancel_requested:
+                raise RuntimeError("exploration canceled")
+            if self._spin_thread is not None and time.monotonic() - self._spin_at > 5:
+                raise RuntimeError("exploration ROS worker is unresponsive")
+            handle.elapsed_s = reading[0] / 1e9 - handle.started_at
+        return reading
+
+    def _now(self, handle=None):
+        return self._read_reference(handle or self._task)[0] / 1e9
+
+    def _wait_reference(self, duration, handle):
+        deadline = self._now(handle) + duration
+        while self._now(handle) < deadline:
+            self._stop_evt.wait(.1)
 
     def _explore(self, handle: TaskHandle) -> None:
         """Explore until no frontier is worth a visit, then end the task.
@@ -464,7 +544,8 @@ class ExploreController:
                      deadline: Optional[float]) -> Optional[Tuple[str, str]]:
         if handle.cancel_requested:
             return "canceled", "user-requested cancel"
-        if deadline is not None and time.time() > deadline:
+        now = self._now(handle)
+        if deadline is not None and now > deadline:
             return "timeout", f"hit {handle.timeout_s}s ceiling"
         return None
 
@@ -481,6 +562,10 @@ class ExploreController:
             latest = self._latest_map
             pose_xyyaw = self._latest_pose_xyyaw
             visited_xy = set(self._visited_xy)
+            if self._map_reference is None or self._map_reference[1:] != handle.reference[1:]:
+                latest = None
+            if self._pose_reference is None or self._pose_reference[1:] != handle.reference[1:]:
+                pose_xyyaw = None
         if latest is None:
             return None
         pose = pose_xyyaw[:2] if pose_xyyaw else None
@@ -490,7 +575,7 @@ class ExploreController:
         # Growth since the last progress, so a map that grows a little every
         # round still counts.
         if area - handle.area_at_last_progress_m2 > self.PROGRESS_AREA_DELTA_M2:
-            handle.last_progress_t = time.time()
+            handle.last_progress_t = self._now(handle)
             handle.area_at_last_progress_m2 = area
         handle.last_area_m2 = area
 
@@ -524,7 +609,7 @@ class ExploreController:
         if view.frontiers == 0:
             return _Step(end=("done",
                               f"no frontiers left (area={view.area_m2:.1f}m²)"))
-        if time.time() - handle.last_progress_t > self.NO_PROGRESS_TIMEOUT_S:
+        if self._now(handle) - handle.last_progress_t > self.NO_PROGRESS_TIMEOUT_S:
             return _Step(end=("error",
                               f"map has not grown for "
                               f"{self.NO_PROGRESS_TIMEOUT_S:.0f}s with "
@@ -642,7 +727,7 @@ class ExploreController:
                 return ("error", f"{handle.consecutive_nav_failures} nav legs "
                                  f"failed in a row; last: {msg}")
             handle.detail = f"nav leg failed ({msg}); trying next frontier"
-        time.sleep(self.LOOP_QUIET_PERIOD_S)
+        self._wait_reference(self.LOOP_QUIET_PERIOD_S, handle)
         return None
 
     def _terminate(self, handle: TaskHandle, state: str, detail: str) -> None:
@@ -652,21 +737,21 @@ class ExploreController:
         log.info("[%s] task %s: %s", handle.task_id, state, detail)
 
     def _wait_for_map(self, timeout_s: float) -> Any:
-        deadline = time.time() + timeout_s
-        while time.time() < deadline:
+        deadline = self._now() + timeout_s
+        while self._now() < deadline:
             with self._lock:
-                if self._latest_map is not None:
+                if (self._latest_map is not None and self._map_reference is not None
+                        and self._map_reference[1:] == self._task.reference[1:]):
                     return self._latest_map
             time.sleep(0.2)
         return None
 
     # ── Sweep / coverage helpers ───────────────────────────────────
-    @staticmethod
-    def _bounded_timeout(requested_s: float,
+    def _bounded_timeout(self, requested_s: float,
                          deadline: Optional[float]) -> float:
         if deadline is None:
             return requested_s
-        return max(0.0, min(requested_s, deadline - time.time()))
+        return max(0.0, min(requested_s, deadline - self._now()))
 
     def _sweep_360(self, handle: TaskHandle, *,
                    deadline: Optional[float]) -> None:
@@ -692,7 +777,7 @@ class ExploreController:
                 cancel_evt=handle)
             if not ok:
                 return
-            time.sleep(0.5)
+            self._wait_reference(.5, handle)
 
     # ── Nav RPC over MCP HTTP ──────────────────────────────────────
     # simple_nav exposes navigate/status/cancel as MCP tools, so we
@@ -715,14 +800,18 @@ class ExploreController:
 
         if not self._scene_endpoint:
             return []
-        now = time.time()
-        if now - self._keepout_stamp < self.KEEPOUT_TTL_S:
+        initial = self._read_reference(self._task)
+        now = initial[0] / 1e9
+        if (self._keepout_stamp is not None and self._keepout_reference == initial[1:]
+                and now - self._keepout_stamp < self.KEEPOUT_TTL_S):
             return self._keepout_cache
 
         with self._lock:
             latest = self._latest_map
         map_frame = latest.header.frame_id if latest is not None else "map"
         resp = self._scene_mcp_call("list_objects", {})
+        if self._read_reference(self._task)[1:] != initial[1:]:
+            raise RuntimeError("Chronos reference changed during Scene request")
         circles: List[Tuple[float, float, float]] = []
         for obj in (resp.get("objects") or []):
             label = str(obj.get("label") or "")
@@ -749,6 +838,7 @@ class ExploreController:
 
         self._keepout_cache = circles
         self._keepout_stamp = now
+        self._keepout_reference = initial[1:]
         if circles:
             log.info("keep-out from scene: %d object(s)", len(circles))
         return circles
@@ -768,8 +858,8 @@ class ExploreController:
 
         from fastmcp import Client
 
-        async with Client(self._scene_endpoint) as c:
-            result = await c.call_tool(tool, args)
+        async with Client(self._scene_endpoint, timeout=5, init_timeout=2) as c:
+            result = await c.call_tool(tool, args, timeout=3)
             if not result.content:
                 return {}
             try:
@@ -779,15 +869,16 @@ class ExploreController:
 
     async def _mcp_call(self, tool: str, args: dict) -> dict:
         """Single MCP tool round-trip. Async because fastmcp's client
-        is async — we await inside a fresh event loop in the caller.
-
-        A new Client per call: calls come from the task thread and from
-        MCP handler threads, each with its own event loop, and every
-        call already opens its own MCP session."""
+        is async — we await inside a fresh event loop in the caller."""
         from fastmcp import Client
-        # All three endpoints typically share the same base URL.
-        async with Client(self._nav_endpoints["navigate"]) as c:
-            result = await c.call_tool(tool, args)
+        async with Client(self._nav_endpoints[tool], timeout=5, init_timeout=2) as c:
+            metadata = None
+            if tool == "navigate":
+                reading = self._read_reference(self._task)
+                metadata = {"robonix-reference-generation": reading[1],
+                            "robonix-navigation-run-id": self._task.nav_run_id,
+                            "robonix-navigation-deadline-unix-s": time.time() + 5}
+            result = await c.call_tool(tool, args, timeout=3, meta=metadata)
             # FastMCP returns a list of TextContent; the tool returned
             # JSON-serialised dict in its sole entry.
             if not result.content:
@@ -812,6 +903,9 @@ class ExploreController:
                                  cancel_evt: TaskHandle) -> Tuple[bool, str]:
         """Send a goal via the nav MCP `navigate` tool, then poll the
         sibling `status` tool until terminal or timeout."""
+        if cancel_evt.cancel_requested:
+            return False, "canceled during nav"
+        self._read_reference(cancel_evt)
         # Navigate.srv carries a PoseStamped (`goal`) — encode xy in
         # position and yaw as a unit quaternion in orientation. The nav
         # service reads the identity quaternion (yaw=None) as yaw 0, not
@@ -828,15 +922,24 @@ class ExploreController:
                 "orientation": {"x": 0.0, "y": 0.0, "z": qz, "w": qw},
             },
         }
+        cancel_evt.nav_run_id = str(uuid.uuid4())
         resp = self._mcp_call_sync("navigate", {"goal": goal_pose})
+        if not resp:
+            self._nav_cancel_rpc(run_id=cancel_evt.nav_run_id)
+            raise RuntimeError("navigation request failed before acknowledgment")
         if not resp.get("accepted", False):
             return False, f"goal rejected: {resp.get('detail', '')}"
         run_id = resp.get("run_id", "")
+        cancel_evt.nav_run_id = run_id
+        if cancel_evt.cancel_requested:
+            self._nav_cancel_rpc(run_id=run_id)
+            return False, "canceled during nav"
 
         # Poll status. Empty run_id is allowed: navigation falls back to the
         # most recent run.
-        deadline = time.time() + timeout_s
-        while time.time() < deadline:
+        deadline = self._now(cancel_evt) + timeout_s
+        failed_since = None
+        while self._now(cancel_evt) < deadline:
             if cancel_evt.cancel_requested:
                 self._nav_cancel_rpc(run_id=run_id)
                 return False, "canceled during nav"
@@ -847,10 +950,17 @@ class ExploreController:
                 self._nav_cancel_rpc(run_id=run_id)
                 return False, "goal now inside an obstacle in the costmap"
             sresp = self._mcp_call_sync("status", {"run_id": run_id})
+            self._read_reference(cancel_evt)
             if sresp:
+                failed_since = None
                 state = str(sresp.get("state", "")).upper()
                 if state in ("SUCCEEDED", "FAILED", "CANCELED", "TIMEOUT"):
                     return state == "SUCCEEDED", f"nav terminal: {state}"
+            elif failed_since is None:
+                failed_since = time.monotonic()
+            elif time.monotonic() - failed_since >= 5:
+                self._nav_cancel_rpc(run_id=run_id)
+                return False, "navigation status unavailable"
             time.sleep(self.NAV_POLL_PERIOD_S)
         self._nav_cancel_rpc(run_id=run_id)
         return False, "leg timeout"
@@ -868,7 +978,15 @@ class ExploreController:
         return not is_target_safe(gv, x, y, safe_radius_m=self.robot_radius_m)
 
     def _nav_cancel_rpc(self, run_id: str = "") -> None:
+        deadline = time.monotonic() + 5
         self._mcp_call_sync("cancel", {"run_id": run_id})
+        while True:
+            status = self._mcp_call_sync("status", {"run_id": run_id})
+            if status.get("known") is True and str(status.get("state", "")).upper() in ("SUCCEEDED", "FAILED", "CANCELED", "TIMEOUT"):
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"navigation cancellation unacknowledged for {run_id}")
+            time.sleep(.1)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -930,7 +1048,6 @@ def _import_ros() -> dict:
     from rclpy.node import Node
     from rclpy.qos import (QoSProfile, ReliabilityPolicy,
                             DurabilityPolicy, HistoryPolicy)
-    from rclpy.duration import Duration
     from nav_msgs.msg import OccupancyGrid
     return {
         "rclpy": rclpy,
@@ -939,6 +1056,5 @@ def _import_ros() -> dict:
         "ReliabilityPolicy": ReliabilityPolicy,
         "DurabilityPolicy": DurabilityPolicy,
         "HistoryPolicy": HistoryPolicy,
-        "Duration": Duration,
         "OccupancyGrid": OccupancyGrid,
     }

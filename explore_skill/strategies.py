@@ -390,5 +390,3 @@ def validate(strategy: str) -> str:
         raise ValueError(f"unknown explore strategy {strategy!r}; "
                          f"expected one of {', '.join(STRATEGIES)}")
     return strategy
-
-

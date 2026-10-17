@@ -11,6 +11,18 @@ description: >-
   How the Explore skill chooses the next frontier to visit.
 
 properties:
+  reference:
+    type: object
+    description: Inherited deployment reference for robot duration and data age.
+    properties:
+      kind:
+        type: string
+        enum: [linux_system, ros_time]
+        default: linux_system
+      provider_id:
+        type: string
+        default: chronos
+
   strategy:
     type: string
     enum: [frontier_greedy, mrtsp]

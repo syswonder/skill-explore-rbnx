@@ -121,3 +121,25 @@ def test_an_object_in_another_frame_is_skipped():
         _obj("chair", 1.0, 1.0, 0.5, 0.5, frame="odom"),
         _obj("table", 2.0, 1.0, 1.2, 0.8))
     assert [c[:2] for c in ctrl._keepout_circles()] == [(2.0, 1.0)]
+
+
+def test_paused_zero_reference_keeps_snapshot_but_new_generation_rejects_pending_result():
+    from unittest.mock import Mock
+    ctrl = _controller()
+    reading = [(0, 1, 1)]
+    ctrl._reference = Mock(read=lambda: reading[0])
+    calls = []
+    ctrl._scene_mcp_call = lambda *args: calls.append(args) or _objects(_obj('chair', 1, 1, .5, .5))
+    assert ctrl._keepout_circles()
+    assert ctrl._keepout_circles()
+    assert len(calls) == 1
+    reading[0] = (11_000_000_000, 1, 1)
+    def interrupted(*args):
+        reading[0] = (0, 2, 1)
+        return _objects(_obj('table', 2, 2, 1, 1))
+    ctrl._scene_mcp_call = interrupted
+    with pytest.raises(RuntimeError, match='reference changed'):
+        ctrl._keepout_circles()
+    assert ctrl._keepout_cache[0][:2] == (1, 1)
+    ctrl._scene_mcp_call = lambda *args: {}
+    assert ctrl._keepout_circles() == []

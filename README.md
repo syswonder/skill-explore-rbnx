@@ -6,6 +6,17 @@ triggers the `robonix/skill/explore/explore` tool).
 
 See `CAPABILITY.md` for the full interface + behaviour spec.
 
+Exploration duration, first-map wait, navigation legs, sweeps, settling and
+cached obstacle data age use the deployment's selected `reference`. The
+controller's ROS node uses simulation time for `ros_time`. Status queries,
+cancellation requests, failure backoff and shutdown joins retain real limits.
+Reference interruption ends tasks, including those without a duration limit,
+and cancels their navigation runs. Old map, pose, costmap, Scene cache and
+visited history cannot continue in a new generation. Progress deadlines stay
+frozen during a pause. A current map with no frontiers can finish immediately.
+Activation waits for reference time before subscribing to the map so that a
+latched map arriving at startup is retained.
+
 ## Quickstart
 
 ```bash
