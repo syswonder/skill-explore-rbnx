@@ -8,6 +8,7 @@ classes via explore.mcp's introspection — no hand-written schemas.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -207,11 +208,11 @@ def status(req: GetExploreStatus_Request) -> GetExploreStatus_Response:
 
 
 @explore_skill.mcp("robonix/skill/explore/explore/cancel")
-def cancel(req: CancelExplore_Request) -> CancelExplore_Response:
+async def cancel(req: CancelExplore_Request) -> CancelExplore_Response:
     """Abort the active exploration. Idempotent."""
     if ctrl is None:
         raise RuntimeError("controller not initialized")
-    ok, msg = ctrl.cancel(req.run_id or None)
+    ok, msg = await asyncio.to_thread(ctrl.cancel, req.run_id or None)
     return CancelExplore_Response(ok=ok, message=msg)
 
 
