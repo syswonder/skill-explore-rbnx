@@ -30,10 +30,14 @@ stop: bash scripts/stop.sh
 
 capabilities:
   - name: robonix/skill/explore/driver
+    transport: grpc
     path: capabilities/driver.v1.toml
   - name: robonix/skill/explore/explore
+    transport: mcp
     path: capabilities/explore.v1.toml
   - name: robonix/skill/explore/explore/status
+    transport: mcp
     path: capabilities/status.v1.toml
   - name: robonix/skill/explore/explore/cancel
+    transport: mcp
     path: capabilities/cancel.v1.toml
