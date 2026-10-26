@@ -61,6 +61,11 @@ class TaskHandle:
     consecutive_nav_failures: int = 0
     empty_sweeps: int = 0             # sweeps in a row that found no target
     thread: Optional[threading.Thread] = None
+    nav_run_id: str = ""
+    nav_starting: bool = False
+    nav_start_error: str = ""
+    nav_cancel_error: str = ""
+    finished_at: Optional[float] = None
 
 
 @dataclass
@@ -114,6 +119,9 @@ class ExploreController:
     # Navigation legs
     NAV_POLL_PERIOD_S = 1.0
     NAV_GOAL_TIMEOUT_S = 60.0             # minimum per leg
+    NAV_RPC_TIMEOUT_S = 5.0
+    NAV_CANCEL_POLL_TIMEOUT_S = 2.0
+    NAV_CANCEL_POLL_PERIOD_S = 0.2
     LEG_TIMEOUT_PER_M_S = 7.0             # per metre of path, above the minimum
     LOOP_QUIET_PERIOD_S = 2.0             # pause between legs
 
@@ -172,6 +180,7 @@ class ExploreController:
         # its origin, and cells recorded against an earlier map would land
         # somewhere else on the next one.
         self._visited_xy: set = set()
+        self._cancel_lock = threading.Lock()
         self._task: Optional[TaskHandle] = None
 
         self._ros: Optional[dict] = None
@@ -224,8 +233,10 @@ class ExploreController:
         log.info("rclpy spinning; subscribed to map_topic=%s", self.map_topic)
 
     def stop_runtime(self) -> None:
-        if self._task and self._task.state == "exploring":
-            self.cancel(None)
+        if self._task:
+            accepted, detail = self.cancel(None)
+            if not accepted:
+                log.error("shutdown navigation stop unconfirmed: %s", detail)
         self._stop_evt.set()
         if self._spin_thread:
             self._spin_thread.join(timeout=3.0)
@@ -340,7 +351,10 @@ class ExploreController:
     def start(self, *, area_hint: str, timeout_s: float,
               max_speed_m_s: float) -> TaskHandle:
         with self._lock:
-            if self._task is not None and self._task.state == "exploring":
+            if self._task is not None and (
+                self._task.state == "exploring"
+                or self._task.nav_starting or self._task.nav_run_id
+            ):
                 raise RuntimeError(
                     f"another exploration task is already running "
                     f"(task_id={self._task.task_id}). Call cancel() "
@@ -363,24 +377,57 @@ class ExploreController:
         return handle
 
     def cancel(self, task_id: Optional[str]) -> Tuple[bool, str]:
+        """Retain the navigation handle until navigation reports a known terminal status."""
         with self._lock:
             t = self._task
             if t is None:
                 return True, "no active task (no-op)"
             if task_id and t.task_id != task_id:
                 return False, f"task_id mismatch (active={t.task_id})"
-            if t.state != "exploring":
+            if t.state != "exploring" and not (
+                t.nav_starting or t.nav_run_id or t.nav_start_error
+            ):
                 return True, f"task already in terminal state {t.state} (no-op)"
             t.cancel_requested = True
             t.detail = "cancel requested"
-        # Best-effort: also tell nav to drop its current goal so the
-        # robot stops moving immediately rather than after the leg
-        # finishes.
-        try:
-            self._nav_cancel_rpc(run_id="")
-        except Exception as e:  # noqa: BLE001
-            log.warning("nav cancel rpc failed: %s", e)
-        return True, f"cancel requested for {t.task_id}"
+        accepted, detail = self._cancel_navigation(t)
+        return accepted, f"{t.task_id}: {detail}"
+
+    def _cancel_navigation(self, handle: TaskHandle) -> Tuple[bool, str]:
+        """Serialize worker and RPC cancellation without holding the state lock."""
+        with self._cancel_lock:
+            with self._lock:
+                run_id = handle.nav_run_id
+                starting = handle.nav_starting
+                start_error = handle.nav_start_error
+            if starting:
+                accepted, detail = False, "navigation start pending; stop unconfirmed"
+            elif start_error:
+                accepted, detail = False, f"no navigation run_id available; {start_error}"
+            elif not run_id:
+                accepted, detail = True, "no active navigation; local cancel requested"
+            else:
+                try:
+                    accepted, detail = self._nav_cancel_rpc(run_id)
+                except Exception as error:
+                    accepted, detail = False, str(error)
+                if not accepted:
+                    detail = f"navigation cancel failed; stop unconfirmed: {detail}"
+            with self._lock:
+                if not accepted and not (
+                    handle.nav_starting or handle.nav_run_id or handle.nav_start_error
+                ):
+                    accepted, detail = True, "navigation is no longer active"
+                handle.nav_cancel_error = "" if accepted else detail
+                if accepted and handle.nav_run_id == run_id:
+                    handle.nav_run_id = ""
+                if handle.cancel_requested:
+                    handle.detail = detail
+                    if handle.state != "exploring":
+                        handle.state = "canceled" if accepted else "error"
+            if not accepted:
+                log.warning("[%s] %s", handle.task_id, detail)
+            return accepted, detail
 
     def status(self, task_id: Optional[str]) -> Optional[dict]:
         with self._lock:
@@ -389,14 +436,17 @@ class ExploreController:
                 return None
             if task_id and t.task_id != task_id:
                 return None
-            elapsed = time.time() - t.started_at
+            elapsed = (t.finished_at if t.finished_at is not None else time.time()) - t.started_at
             return {
                 "state": t.state,
                 "area_m2": float(t.last_area_m2),
                 "frontiers_left": _frontiers_left_count(self._latest_map),
                 "elapsed_s": float(elapsed),
                 "eta_s": -1.0,    # we don't currently estimate
-                "detail": t.detail,
+                "detail": (
+                    f"{t.detail}; {t.nav_cancel_error}"
+                    if t.state == "exploring" and t.nav_cancel_error else t.detail
+                ),
                 "task_id": t.task_id,
             }
 
@@ -409,10 +459,6 @@ class ExploreController:
             self._explore(handle)
         except Exception as e:  # noqa: BLE001
             log.exception("[%s] exploration failed", handle.task_id)
-            try:
-                self._nav_cancel_rpc()
-            except Exception:  # noqa: BLE001 — navigation may be what failed
-                pass
             self._terminate(handle, "error", f"{type(e).__name__}: {e}")
 
     def _explore(self, handle: TaskHandle) -> None:
@@ -462,6 +508,8 @@ class ExploreController:
 
     def _interrupted(self, handle: TaskHandle,
                      deadline: Optional[float]) -> Optional[Tuple[str, str]]:
+        if handle.nav_start_error:
+            return "error", handle.nav_start_error
         if handle.cancel_requested:
             return "canceled", "user-requested cancel"
         if deadline is not None and time.time() > deadline:
@@ -624,8 +672,18 @@ class ExploreController:
         ok, msg = self._nav_navigate_blocking(
             tx, ty, yaw=math.atan2(fy - hy, fx - hx),
             timeout_s=leg_timeout, cancel_evt=handle)
+        if handle.nav_start_error:
+            return "error", handle.nav_start_error
         if handle.cancel_requested:
             return "canceled", "cancel during nav"
+        with self._lock:
+            unresolved = handle.nav_starting or bool(handle.nav_run_id)
+        if unresolved:
+            if not self._wait_for_navigation_stop(handle, msg):
+                return None
+            end = self._interrupted(handle, deadline)
+            if end:
+                return end
         if step.close:
             handle.close_visits.append((fx, fy))
         if ok:
@@ -645,10 +703,35 @@ class ExploreController:
         time.sleep(self.LOOP_QUIET_PERIOD_S)
         return None
 
+    def _wait_for_navigation_stop(self, handle: TaskHandle, detail: str) -> bool:
+        """Keep ownership until navigation confirms termination or runtime stops."""
+        accepted, _ = self._cancel_navigation(handle)
+        while not accepted:
+            with self._lock:
+                if handle.nav_start_error:
+                    return False
+                handle.state = "exploring"
+                handle.detail = detail
+                handle.finished_at = None
+            if self._stop_evt.wait(self.NAV_POLL_PERIOD_S):
+                return False
+            accepted, _ = self._cancel_navigation(handle)
+        return True
+
     def _terminate(self, handle: TaskHandle, state: str, detail: str) -> None:
+        """Retain owned navigation until terminal; report unknown starts explicitly."""
+        stopped = self._wait_for_navigation_stop(handle, detail)
         with self._lock:
+            if handle.nav_start_error:
+                state = "error"
+                if handle.nav_start_error not in detail:
+                    detail = f"{detail}; {handle.nav_start_error}"
+            elif not stopped:
+                return
             handle.state = state
             handle.detail = detail
+            if handle.finished_at is None:
+                handle.finished_at = time.time()
         log.info("[%s] task %s: %s", handle.task_id, state, detail)
 
     def _wait_for_map(self, timeout_s: float) -> Any:
@@ -687,10 +770,14 @@ class ExploreController:
             handle.detail = (f"sweep at ({x:.2f},{y:.2f}) "
                              f"yaw={math.degrees(target_yaw)%360:.0f}°")
             log.info("[%s] %s", handle.task_id, handle.detail)
-            ok, _ = self._nav_navigate_blocking(
+            ok, detail = self._nav_navigate_blocking(
                 x, y, yaw=target_yaw, timeout_s=segment_timeout,
                 cancel_evt=handle)
             if not ok:
+                with self._lock:
+                    unresolved = handle.nav_starting or bool(handle.nav_run_id)
+                if unresolved and not handle.cancel_requested:
+                    self._wait_for_navigation_stop(handle, detail)
                 return
             time.sleep(0.5)
 
@@ -786,7 +873,7 @@ class ExploreController:
         call already opens its own MCP session."""
         from fastmcp import Client
         # All three endpoints typically share the same base URL.
-        async with Client(self._nav_endpoints["navigate"]) as c:
+        async with Client(self._nav_endpoints[tool]) as c:
             result = await c.call_tool(tool, args)
             # FastMCP returns a list of TextContent; the tool returned
             # JSON-serialised dict in its sole entry.
@@ -800,10 +887,13 @@ class ExploreController:
                 return {"raw": txt}
 
     def _mcp_call_sync(self, tool: str, args: dict) -> dict:
+        """Bound transport failures so a cancel cannot wait indefinitely."""
         try:
-            return _run_coroutine_sync(lambda: self._mcp_call(tool, args))
+            return _run_coroutine_sync(
+                lambda: self._mcp_call(tool, args), timeout_s=self.NAV_RPC_TIMEOUT_S,
+            )
         except Exception as e:  # noqa: BLE001
-            log.warning("mcp call %s failed: %s", tool, e)
+            log.warning("mcp call %s failed (%s): %s", tool, type(e).__name__, e)
             return {}
 
     def _nav_navigate_blocking(self, x: float, y: float, *,
@@ -828,31 +918,66 @@ class ExploreController:
                 "orientation": {"x": 0.0, "y": 0.0, "z": qz, "w": qw},
             },
         }
-        resp = self._mcp_call_sync("navigate", {"goal": goal_pose})
-        if not resp.get("accepted", False):
-            return False, f"goal rejected: {resp.get('detail', '')}"
-        run_id = resp.get("run_id", "")
+        with self._lock:
+            if cancel_evt.cancel_requested:
+                return False, "canceled before navigation"
+            if cancel_evt.nav_start_error:
+                return False, cancel_evt.nav_start_error
+            if cancel_evt.nav_starting or cancel_evt.nav_run_id:
+                return False, "previous navigation stop unconfirmed"
+            cancel_evt.nav_starting = True
+        run_id = ""
+        problem = ""
+        try:
+            resp = self._mcp_call_sync("navigate", {"goal": goal_pose})
+            if isinstance(resp, dict) and resp.get("accepted") is False:
+                return False, f"goal rejected: {resp.get('detail', '')}"
+            if isinstance(resp, dict) and resp.get("accepted") is True:
+                candidate = resp.get("run_id")
+                if isinstance(candidate, str) and candidate.strip():
+                    run_id = candidate
+                else:
+                    problem = "navigation accepted without a valid run_id"
+            else:
+                problem = "navigation returned no valid acceptance reply"
+        except Exception as error:
+            problem = f"navigation start failed ({type(error).__name__}): {error}"
+        finally:
+            with self._lock:
+                cancel_evt.nav_starting = False
+                cancel_evt.nav_run_id = run_id
+                cancel_evt.nav_start_error = (
+                    f"{problem}; navigation start outcome unknown; "
+                    "remote motion may still be active; stop unconfirmed"
+                    if problem else ""
+                )
+                cancel_evt.nav_cancel_error = ""
+        if problem:
+            log.warning("[%s] %s", cancel_evt.task_id, cancel_evt.nav_start_error)
+            return False, cancel_evt.nav_start_error
 
-        # Poll status. Empty run_id is allowed: navigation falls back to the
-        # most recent run.
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             if cancel_evt.cancel_requested:
-                self._nav_cancel_rpc(run_id=run_id)
-                return False, "canceled during nav"
+                accepted, detail = self._cancel_navigation(cancel_evt)
+                return False, "canceled during nav" if accepted else detail
             if self._goal_blocked(x, y):
                 # The goal was chosen before the camera saw what is there
                 # (a table top the lidar's map lacks). Driving on puts the
                 # robot against it; give the leg up and choose again.
-                self._nav_cancel_rpc(run_id=run_id)
+                self._cancel_navigation(cancel_evt)
                 return False, "goal now inside an obstacle in the costmap"
             sresp = self._mcp_call_sync("status", {"run_id": run_id})
-            if sresp:
+            if isinstance(sresp, dict) and sresp.get("known") is True:
                 state = str(sresp.get("state", "")).upper()
-                if state in ("SUCCEEDED", "FAILED", "CANCELED", "TIMEOUT"):
+                if state in (
+                    "SUCCEEDED", "FAILED", "CANCELED", "TIMEOUT",
+                ):
+                    with self._lock:
+                        cancel_evt.nav_run_id = ""
                     return state == "SUCCEEDED", f"nav terminal: {state}"
             time.sleep(self.NAV_POLL_PERIOD_S)
-        self._nav_cancel_rpc(run_id=run_id)
+        self._cancel_navigation(cancel_evt)
         return False, "leg timeout"
 
     def _goal_blocked(self, x: float, y: float) -> bool:
@@ -867,8 +992,27 @@ class ExploreController:
         gv = self._with_costmap(GridView.from_msg(latest), latest)
         return not is_target_safe(gv, x, y, safe_radius_m=self.robot_radius_m)
 
-    def _nav_cancel_rpc(self, run_id: str = "") -> None:
-        self._mcp_call_sync("cancel", {"run_id": run_id})
+    def _nav_cancel_rpc(self, run_id: str) -> Tuple[bool, str]:
+        """Keep the handle until navigation actually reports a terminal state."""
+        if not run_id:
+            return False, "navigation run_id missing; stop unconfirmed"
+        response = self._mcp_call_sync("cancel", {"run_id": run_id})
+        deadline = time.monotonic() + self.NAV_CANCEL_POLL_TIMEOUT_S
+        while True:
+            status = self._mcp_call_sync("status", {"run_id": run_id})
+            state = status.get("state", "unknown") if isinstance(status, dict) else "unknown"
+            if isinstance(status, dict) and status.get("known") is True and state in (
+                "SUCCEEDED", "FAILED", "CANCELED", "TIMEOUT",
+            ):
+                return True, f"navigation already terminal: {state}"
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(self.NAV_CANCEL_POLL_PERIOD_S, remaining))
+        if isinstance(response, dict) and response.get("accepted") is True:
+            return False, f"navigation accepted cancel but termination is unconfirmed: {state}"
+        detail = response.get("detail") if isinstance(response, dict) else ""
+        return False, detail or "navigation did not acknowledge cancellation"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -878,7 +1022,7 @@ class ExploreController:
 MCP_CALL_TIMEOUT_S = 10.0
 
 
-def _run_coroutine_sync(make_coro) -> Any:
+def _run_coroutine_sync(make_coro, *, timeout_s: Optional[float] = None) -> Any:
     """Run the coroutine returned by make_coro() to completion, or raise
     TimeoutError after MCP_CALL_TIMEOUT_S.
 
@@ -887,8 +1031,10 @@ def _run_coroutine_sync(make_coro) -> Any:
     run it on a short-lived thread with its own loop instead."""
     import asyncio
 
+    timeout_s = min(MCP_CALL_TIMEOUT_S, timeout_s) if timeout_s is not None else MCP_CALL_TIMEOUT_S
+
     def bounded():
-        return asyncio.wait_for(make_coro(), MCP_CALL_TIMEOUT_S)
+        return asyncio.wait_for(make_coro(), timeout_s)
 
     try:
         asyncio.get_running_loop()
@@ -905,9 +1051,9 @@ def _run_coroutine_sync(make_coro) -> Any:
 
     t = threading.Thread(target=runner, name="explore-mcp-call", daemon=True)
     t.start()
-    t.join(MCP_CALL_TIMEOUT_S + 1.0)
+    t.join(timeout_s + 1.0)
     if t.is_alive():
-        raise TimeoutError(f"mcp call did not finish in {MCP_CALL_TIMEOUT_S}s")
+        raise TimeoutError(f"mcp call did not finish in {timeout_s}s")
     if "error" in result:
         raise result["error"]
     return result.get("value")
