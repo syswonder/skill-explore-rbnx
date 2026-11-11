@@ -57,7 +57,10 @@ Passing an empty `run_id` uses the most recent exploration task.
    - Find frontier cells (free cells next to unknown) and cluster them.
      Cells the robot has driven over or cannot see under itself count as
      free; the navigation costmap's lethal cells and Scene's furniture
-     count as obstacles.
+     count as obstacles. The map is padded with 1 m of unknown first, so
+     free cells at its edge are frontiers too: SLAM crops the map to what
+     it has seen, which can leave the corridor behind the start running to
+     the edge.
    - Choose a frontier with the configured strategy: `frontier_greedy`
      (default) scores each by its size over the distance to it; `mrtsp`
      orders them as Liu et al. (2025) do and visits the first. Frontiers
