@@ -215,3 +215,36 @@ def test_a_costmap_in_another_frame_is_transformed():
     out = overlay_lethal(gv, _costmap(cost, 0.05, ox=1.0,
                                       oyaw=math.pi / 2)).data
     assert (out[12:14, 16:18] == WALL).any()  # map x 0.8..0.9, y 0.6..0.7
+
+
+def test_unknown_standoff_searches_back_to_known_ground():
+    # A curved frontier's representative point can be on its far side.
+    # The nominal approach crosses unknown, but a farther standoff is free.
+    rows = [[FREE] * 60 for _ in range(40)]
+    for row in rows:
+        row[30:40] = [UNKNOWN] * 10
+    gv = _grid(rows)
+    goal = approach_point(gv, (.5, 1.), (2.05, 1.), standoff_m=.45,
+                          clearance_m=DEFAULT_CLEARANCE_M)
+    assert goal is not None
+    cx, cy = gv.world_to_cell(*goal)
+    assert gv.data[cy, cx] == FREE
+
+
+def test_unknown_only_approaches_do_not_become_navigation_goals():
+    gv = _grid([[UNKNOWN] * 60 for _ in range(40)])
+    assert approach_point(gv, (.5, 1.), (2.05, 1.), standoff_m=.45,
+                          clearance_m=DEFAULT_CLEARANCE_M) is None
+
+
+def test_known_goal_can_still_border_unknown_space():
+    gv = _half_unknown()
+    goal = approach_point(gv, (.5, 1.), (1.5, 1.), standoff_m=.1,
+                          clearance_m=DEFAULT_CLEARANCE_M)
+    assert goal == pytest.approx((1.4, 1.))
+
+
+def test_approach_just_below_map_origin_is_outside():
+    gv = _grid([[FREE] * 20 for _ in range(20)])
+    assert approach_point(gv, (-.02, .5), (-.01, .5), standoff_m=.45,
+                          clearance_m=DEFAULT_CLEARANCE_M) is None

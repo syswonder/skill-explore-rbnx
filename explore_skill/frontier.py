@@ -314,7 +314,8 @@ def approach_point(gv: GridView,
     more observed ground, then closer in -- and takes the point with the
     most room around it, up to `preferred_clearance_m`. Ties go to the
     earlier point, so in open ground the nominal standoff is kept. Returns
-    None when no point on the segment clears `clearance_m`.
+    None when no known, non-occupied point on the segment clears
+    `clearance_m`. Unknown neighbours remain allowed at the frontier.
     """
     offsets = [standoff_m]
     step = _STANDOFF_STEP_M
@@ -332,6 +333,13 @@ def approach_point(gv: GridView,
             continue
         seen.add(key)
         px, py = standoff_point(robot_xy, target_xy, offset)
+        # A cluster can wrap around unknown space; standing back from its
+        # representative cell does not guarantee the goal is observed ground.
+        # Check the goal cell itself, without requiring its whole halo known.
+        cx = math.floor((px - gv.origin_x) / gv.resolution)
+        cy = math.floor((py - gv.origin_y) / gv.resolution)
+        if not gv.in_bounds(cx, cy) or not 0 <= gv.data[cy, cx] < OCC_THRESH:
+            continue
         if not is_target_safe(gv, px, py, safe_radius_m=clearance_m):
             continue
         if in_keepout(px, py, keepout):
