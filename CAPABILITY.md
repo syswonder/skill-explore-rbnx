@@ -57,14 +57,21 @@ Passing an empty `run_id` uses the most recent exploration task.
    - Find frontier cells (free cells next to unknown) and cluster them.
      Cells the robot has driven over or cannot see under itself count as
      free; the navigation costmap's lethal cells and Scene's furniture
-     count as obstacles.
+     count as obstacles. The map is padded with 1 m of unknown first, so
+     free cells at its edge are frontiers too: SLAM crops the map to what
+     it has seen, which can leave the corridor behind the start running to
+     the edge.
    - Choose a frontier with the configured strategy: `frontier_greedy`
      (default) scores each by its size over the distance to it; `mrtsp`
      orders them as Liu et al. (2025) do and visits the first. Frontiers
-     already reached or failed are skipped.
+     already reached or failed are skipped. With `min_passage_m` set, only
+     frontiers in space reached through openings at least that wide count,
+     so the robot keeps to the corridor and does not enter rooms through
+     their doors.
    - Send the robot to a goal short of the frontier, where its chassis
      fits, facing it, through `service/navigation/navigate`; poll status.
-3. End `done` when no frontier is left or every remaining one has been
+3. End `done` when no frontier is left (with `min_passage_m`, none in the
+   corridor) or every remaining one has been
    tried; `error` when navigation fails 5 legs in a row, the map has not
    grown for 180 s, or (with `frontier_greedy`) no frontier is reachable
    even after turning in place.

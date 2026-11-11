@@ -132,7 +132,8 @@ class ExploreController:
                  strategy: Optional[str] = None,
                  robot_radius_m: Optional[float] = None,
                  mrtsp: Optional[dict] = None,
-                 costmap_topic: Optional[str] = None):
+                 costmap_topic: Optional[str] = None,
+                 min_passage_m: float = 0.0):
         from .frontier import ROBOT_RADIUS_M
         from .strategies import DEFAULT_STRATEGY, validate
         self.map_topic = map_topic
@@ -141,6 +142,8 @@ class ExploreController:
         self.robot_radius_m = robot_radius_m or ROBOT_RADIUS_M
         # mrtsp's parameters (strategies.MRTSP_DEFAULTS).
         self.mrtsp = dict(mrtsp or {})
+        # Explore only through openings this wide (strategies.py); 0 is off.
+        self.min_passage_m = float(min_passage_m or 0.0)
         # Navigation's global costmap (robonix/service/navigation/costmap),
         # whose lethal cells goals keep away from (frontier.overlay_lethal).
         # None: the map alone.
@@ -148,6 +151,10 @@ class ExploreController:
         self._latest_costmap: Any = None
         self._costmap_received = 0.0
         self._costmap_notes: set = set()
+        # Whether the last _with_costmap took the costmap; logged on change
+        # when min_passage_m is on, since doorways are judged on both.
+        self._costmap_applied = False
+        self._gate_source: Optional[str] = None
         # All three nav endpoints typically point at the same FastMCP
         # server (http://host:port/mcp/) — atlas hands us the URL each
         # tool registered under. Keep separate fields so a future
@@ -260,6 +267,7 @@ class ExploreController:
         from .frontier import overlay_lethal
         with self._lock:
             cm, received = self._latest_costmap, self._costmap_received
+        self._costmap_applied = False
         if cm is None:
             return gv
         age = time.monotonic() - received
@@ -280,6 +288,7 @@ class ExploreController:
                 self._costmap_note("no transform %s <- %s (%s); costmap not "
                                    "used", dst, src, e)
                 return gv
+        self._costmap_applied = True
         return overlay_lethal(gv, cm, tf)
 
     def _costmap_note(self, fmt, *args) -> None:
@@ -476,7 +485,7 @@ class ExploreController:
         optimized map (map_opt.py) and ignores frontiers shorter than
         `min_frontier_m`."""
         from .frontier import (GridView, fill_traversed, mapped_free_area_m2,
-                               total_frontier_count)
+                               pad_unknown, total_frontier_count)
         with self._lock:
             latest = self._latest_map
             pose_xyyaw = self._latest_pose_xyyaw
@@ -484,7 +493,7 @@ class ExploreController:
         if latest is None:
             return None
         pose = pose_xyyaw[:2] if pose_xyyaw else None
-        gv = GridView.from_msg(latest)
+        gv = pad_unknown(GridView.from_msg(latest))
         visited = self._visited_cells(gv, visited_xy)
         area = mapped_free_area_m2(gv)
         # Growth since the last progress, so a map that grows a little every
@@ -496,6 +505,12 @@ class ExploreController:
 
         gv = fill_traversed(gv, visited | self._blind_cells(gv, pose))
         gv = self._with_costmap(gv, latest)
+        if self.min_passage_m > 0:
+            source = "map + costmap" if self._costmap_applied else "map only"
+            if source != self._gate_source:
+                self._gate_source = source
+                log.info("[%s] passages of %.2f m judged on %s",
+                         handle.task_id, self.min_passage_m, source)
         min_size = self.FRONTIER_MIN_SIZE_CELLS
         if self.strategy == "mrtsp":
             from .map_opt import optimize
@@ -504,7 +519,15 @@ class ExploreController:
             gv = optimize(gv)
             min_frontier_m = {**MRTSP_DEFAULTS, **self.mrtsp}["min_frontier_m"]
             min_size = max(min_size, int(round(min_frontier_m / gv.resolution)))
-        frontiers = total_frontier_count(gv, min_size=min_size)
+        if self.min_passage_m > 0 and pose is not None:
+            # Rooms off the corridor do not count, so the run ends when the
+            # corridor is done.
+            from .strategies import passage_frontier_count
+            frontiers = passage_frontier_count(
+                gv, pose, robot_radius_m=self.robot_radius_m,
+                min_passage_m=self.min_passage_m, min_size=min_size)
+        else:
+            frontiers = total_frontier_count(gv, min_size=min_size)
         if self.strategy == "mrtsp":
             log.info("[%s] frontiers raw=%d optimized=%d",
                      handle.task_id, raw, frontiers)
@@ -521,7 +544,11 @@ class ExploreController:
         every frontier ends. Otherwise mrtsp relaxes the room a goal needs
         and falls back to a greedy goal before it ends, and greedy turns in
         place to see more before it gives up."""
-        if view.frontiers == 0:
+        # The gated count can be zero only because unknown runs alongside the
+        # corridor ahead (the wedge a lidar leaves); that is tried below
+        # before the run ends.
+        wedge_only = view.frontiers == 0 and self.min_passage_m > 0 and view.pose is not None
+        if view.frontiers == 0 and not wedge_only:
             return _Step(end=("done",
                               f"no frontiers left (area={view.area_m2:.1f}m²)"))
         if time.time() - handle.last_progress_t > self.NO_PROGRESS_TIMEOUT_S:
@@ -549,8 +576,15 @@ class ExploreController:
             args.update(overrides)
             return pick(strategy or self.strategy, view.grid, view.pose,
                         robot_yaw=view.yaw, robot_radius_m=self.robot_radius_m,
-                        mrtsp=self.mrtsp, **args)
+                        mrtsp=self.mrtsp, min_passage_m=self.min_passage_m,
+                        **args)
 
+        if wedge_only:
+            target = goal(keep_off_unknown=False)
+            if target is not None:
+                return _Step(target=target)
+            return _Step(end=("done",
+                              f"no frontiers left (area={view.area_m2:.1f}m²)"))
         target = goal(max_distance_m=self.MAX_FRONTIER_DISTANCE_M)
         if target is None:
             target = goal()
@@ -564,6 +598,13 @@ class ExploreController:
                           min_size=self.CLOSE_LOOK_MIN_SIZE_CELLS)
             if target is not None:
                 return _Step(target=target, close=True)
+        if self.min_passage_m > 0:
+            # Before giving up on the corridor: frontier the gate cut off only
+            # because unknown runs alongside it (the wedge a lidar leaves
+            # ahead in a long corridor), still through openings as wide.
+            target = goal(keep_off_unknown=False)
+            if target is not None:
+                return _Step(target=target)
         if tried and goal(blocked_xy=None) is not None:
             # Every frontier left has been tried: done if any was reached.
             return _Step(end=("done" if handle.reached_targets else "error",
